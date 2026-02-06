@@ -70,12 +70,23 @@ contract FunkyRave is ERC20 {
             revert InvalidAddress();
         }
 
-        // Set default fee = 10%
+        // Fee tiers based on holding duration (fee in basis points, divide by 1000)
+        // Phase: Ignition (0-30 days) = 25%
         feePercent[0] = 250;
-        feePercent[30] = 200;
-        feePercent[180] = 150;
-        feePercent[360] = 100;
-        feePercent[720] = 50;
+        // Phase: Stabilization (31-90 days) = 23%
+        feePercent[31] = 230;
+        // Phase: Conviction (91-180 days) = 20%
+        feePercent[91] = 200;
+        // Phase: Commitment (181-270 days) = 16%
+        feePercent[181] = 160;
+        // Phase: Core (271-360 days) = 12%
+        feePercent[271] = 120;
+        // Phase: Veteran (361-540 days) = 8%
+        feePercent[361] = 80;
+        // Phase: Ascended (541-720 days) = 5%
+        feePercent[541] = 50;
+        // Phase: Matured (721+ days) = 3%
+        feePercent[721] = 30;
         feeRecipient = initialFeeRecipient;
 
         // Initialize admin set
