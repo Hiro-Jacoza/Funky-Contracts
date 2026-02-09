@@ -2,11 +2,11 @@
 node_modules
 
 # Hardhat
-cache/
-artifacts/
+cache*/
+artifacts*/
 typechain-types/
-coverage/
-coverage.json
+coverage*/
+coverage*.json
 
 # Environment
 .env
