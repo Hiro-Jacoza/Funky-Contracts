@@ -1,7 +1,29 @@
 const { ethers, network } = require("hardhat");
 
 async function main() {
-  const [deployer] = await ethers.getSigners();
+  const signers = await ethers.getSigners();
+
+  if (signers.length === 0) {
+    console.error("❌ No wallet account found!");
+    console.error("");
+    console.error("You must set the PRIVATE_KEY environment variable before deploying.");
+    console.error("");
+    console.error("On Windows (PowerShell):");
+    console.error('  $env:PRIVATE_KEY="0xYOUR_PRIVATE_KEY_HERE"');
+    console.error('  npm run deploy:nft:mainnet');
+    console.error("");
+    console.error("On Windows (CMD):");
+    console.error('  set PRIVATE_KEY=0xYOUR_PRIVATE_KEY_HERE');
+    console.error('  npm run deploy:nft:mainnet');
+    console.error("");
+    console.error("On Linux/Mac:");
+    console.error('  PRIVATE_KEY=0xYOUR_PRIVATE_KEY_HERE npm run deploy:nft:mainnet');
+    console.error("");
+    console.error("⚠️  NEVER commit your private key to git!");
+    process.exit(1);
+  }
+
+  const deployer = signers[0];
   console.log("Deploying FunkyNFT with account:", deployer.address);
   console.log("Account balance:", ethers.formatEther(await ethers.provider.getBalance(deployer.address)), "BNB");
   console.log("Network:", network.name);
