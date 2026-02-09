@@ -56,6 +56,32 @@ contract FunkyNFT is ERC721URIStorage, ERC2981, Ownable {
         return tokenId;
     }
 
+    /// @notice Mint multiple NFTs in a single transaction
+    /// @param to The address to mint NFTs to
+    /// @param tokenURIs Array of metadata URIs for each NFT
+    /// @return tokenIds Array of minted token IDs
+    function batchMint(
+        address to,
+        string[] memory tokenURIs
+    ) public payable returns (uint256[] memory) {
+        uint256 quantity = tokenURIs.length;
+        require(quantity > 0, "Must mint at least 1 NFT");
+        require(
+            getConversionRate(msg.value) >= mintUsdPrice * quantity,
+            "Must send enough BNB for all NFTs"
+        );
+
+        uint256[] memory tokenIds = new uint256[](quantity);
+        for (uint256 i = 0; i < quantity; i++) {
+            uint256 tokenId = _nextTokenId++;
+            _mint(to, tokenId);
+            _setTokenURI(tokenId, tokenURIs[i]);
+            tokenIds[i] = tokenId;
+        }
+
+        return tokenIds;
+    }
+
      // Optional: allow updating default royalty later
     function setDefaultRoyalty(address royaltyRecipient, uint16 royaltyPercent) external onlyOwner {
         _setDefaultRoyalty(royaltyRecipient, royaltyPercent);
