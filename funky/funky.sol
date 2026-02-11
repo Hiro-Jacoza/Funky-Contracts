@@ -64,7 +64,7 @@ contract FunkyRave is ERC20 {
                               CONSTRUCTOR
     //////////////////////////////////////////////////////////////*/
     constructor(address initialAdmin, address initialFeeRecipient)
-        ERC20("FUNKY RAVE", "FUNKY")
+        ERC20("FUNKY", "FUNKY RAVE")
     {
         if (initialAdmin == address(0) || initialFeeRecipient == address(0)) {
             revert InvalidAddress();

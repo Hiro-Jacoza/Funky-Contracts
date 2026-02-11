@@ -6,6 +6,9 @@
     "compile": "hardhat compile",
     "test": "hardhat test test/FunkyRave.test.js",
     "test:gas": "REPORT_GAS=true hardhat test test/FunkyRave.test.js",
+    "deploy:funky:local": "hardhat run scripts/deploy-funky.js",
+    "deploy:funky:testnet": "hardhat run scripts/deploy-funky.js --network bscTestnet",
+    "deploy:funky:mainnet": "hardhat run scripts/deploy-funky.js --network bscMainnet",
     "compile:nft": "hardhat compile --config hardhat.config.nft.js",
     "test:nft": "hardhat test --config hardhat.config.nft.js test/FunkyNFT.test.js",
     "test:nft:gas": "REPORT_GAS=true hardhat test --config hardhat.config.nft.js test/FunkyNFT.test.js",
@@ -19,6 +22,7 @@
   },
   "dependencies": {
     "@chainlink/contracts": "^1.5.0",
-    "@openzeppelin/contracts": "^5.4.0"
+    "@openzeppelin/contracts": "^5.4.0",
+    "dotenv": "^17.2.3"
   }
 }
