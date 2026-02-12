@@ -181,5 +181,26 @@ describe("FunkyRave", function () {
       expect(await token.balanceOf(feeRecipient.address)).to.equal(feeRecipientBefore);
       expect(await token.balanceOf(dex.address)).to.equal(amount);
     });
+
+    it("transferFrom to DEX uses token owner's tier, not spender tier", async function () {
+      const { token, admin, feeRecipient, dex, user1, user2 } = await loadFixture(deployFunkyRaveFixture);
+      await token.connect(admin).add_dex(dex.address);
+
+      // Owner (user1) should be charged as Matured (3%), while spender (user2) stays default tier 0 (25%)
+      await token.connect(admin).update_holding_date(user1.address, 721);
+      const amount = 1000n * 10n ** 18n;
+      await token.connect(admin).transfer(user1.address, amount);
+
+      await token.connect(user1).approve(user2.address, amount);
+
+      const feeRecipientBefore = await token.balanceOf(feeRecipient.address);
+      await token.connect(user2).transferFrom(user1.address, dex.address, amount);
+
+      const expectedFee = (amount * 30n) / 1000n; // user1 tier 721 => 3%
+      const expectedNet = amount - expectedFee;
+
+      expect(await token.balanceOf(dex.address)).to.equal(expectedNet);
+      expect(await token.balanceOf(feeRecipient.address)).to.equal(feeRecipientBefore + expectedFee);
+    });
   });
 });

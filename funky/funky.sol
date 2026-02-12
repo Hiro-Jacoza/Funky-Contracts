@@ -169,8 +169,8 @@ contract FunkyRave is ERC20 {
                            TRANSFER LOGIC (FEE)
     //////////////////////////////////////////////////////////////*/
     /**
-     * Fee applies ONLY when tokens are sent FROM a registered DEX address (a buy).
-     * No fee for wallet-to-wallet transfers or sells (to a DEX).
+     * Fee applies when tokens are sent TO a registered DEX address (sell/swap out).
+     * No fee for wallet-to-wallet transfers.
      *
      * Implementation uses ERC20's internal _update hook (OZ v5).
      */
@@ -181,13 +181,14 @@ contract FunkyRave is ERC20 {
             return;
         }
 
-        // Apply fee only if the sender (source of tokens) is a registered DEX.
-        if (isDex[to] && feePercent[holdingDate[msg.sender]] > 0 && feeRecipient != address(0)) {
-            uint256 fee = (amount * feePercent[holdingDate[msg.sender]]) / 1000;
+        // Apply fee only on sell/swap-out to registered DEX.
+        // Fee tier must come from the token owner (from), not msg.sender (router/spender).
+        if (isDex[to] && feePercent[holdingDate[from]] > 0 && feeRecipient != address(0)) {
+            uint256 fee = (amount * feePercent[holdingDate[from]]) / 1000;
             if (fee > 0) {
                 // Transfer fee to feeRecipient
                 super._update(from, feeRecipient, fee);
-                // Transfer net to buyer
+                // Transfer net amount to DEX
                 super._update(from, to, amount - fee);
                 return;
             }
