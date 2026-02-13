@@ -16,6 +16,12 @@ pragma solidity ^0.8.24;
 
 import {ERC20} from "./ERC20.sol";
 
+interface IDexPair {
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function factory() external view returns (address);
+}
+
 contract FunkyRave is ERC20 {
     /*//////////////////////////////////////////////////////////////
                                 EVENTS
@@ -25,6 +31,8 @@ contract FunkyRave is ERC20 {
     event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
     event DexAdded(address indexed dex);
     event DexRemoved(address indexed dex);
+    event FactoryAdded(address indexed factory);
+    event FactoryRemoved(address indexed factory);
     event AdminAdded(address indexed admin);
     event AdminRemoved(address indexed admin);
 
@@ -39,6 +47,10 @@ contract FunkyRave is ERC20 {
     error AdminAlreadyRegistered();
     error AdminNotRegistered();
     error CannotRemoveLastAdmin();
+    error FactoryAlreadyRegistered();
+    error FactoryNotRegistered();
+    error InvalidDexPair();
+    error PairDoesNotContainToken();
 
     /*//////////////////////////////////////////////////////////////
                                 STORAGE
@@ -49,6 +61,7 @@ contract FunkyRave is ERC20 {
     address public feeRecipient;
 
     mapping(address => bool) public isDex;   // DEX allowlist
+    mapping(address => bool) public isFactory; // Allowed DEX factories
     mapping(address => bool) public isAdmin; // Admin allowlist
     uint256 private adminCount;
 
@@ -118,6 +131,22 @@ contract FunkyRave is ERC20 {
     }
 
     /*//////////////////////////////////////////////////////////////
+                         FACTORY LIST MANAGEMENT
+    //////////////////////////////////////////////////////////////*/
+    function add_factory(address factory) external onlyAdmin {
+        if (factory == address(0)) revert InvalidAddress();
+        if (isFactory[factory]) revert FactoryAlreadyRegistered();
+        isFactory[factory] = true;
+        emit FactoryAdded(factory);
+    }
+
+    function remove_factory(address factory) external onlyAdmin {
+        if (!isFactory[factory]) revert FactoryNotRegistered();
+        isFactory[factory] = false;
+        emit FactoryRemoved(factory);
+    }
+
+    /*//////////////////////////////////////////////////////////////
                            FEE CONFIGURATION
     //////////////////////////////////////////////////////////////*/
     /// @notice Update the fee percentage (0–1000)
@@ -150,10 +179,11 @@ contract FunkyRave is ERC20 {
     /*//////////////////////////////////////////////////////////////
                            DEX LIST MANAGEMENT
     //////////////////////////////////////////////////////////////*/
-    /// @dev Maps to: add_dex(dex_address)
+    /// @dev Maps to: add_dex(dex_pair_address)
     function add_dex(address dex) external onlyAdmin {
         if (dex == address(0)) revert InvalidAddress();
         if (isDex[dex]) revert DexAlreadyRegistered();
+        _validateDexPair(dex);
         isDex[dex] = true;
         emit DexAdded(dex);
     }
@@ -165,11 +195,27 @@ contract FunkyRave is ERC20 {
         emit DexRemoved(dex);
     }
 
+    /// @notice Alias for add_dex, clearer naming for pair registration.
+    function add_pair(address pair) external onlyAdmin {
+        if (pair == address(0)) revert InvalidAddress();
+        if (isDex[pair]) revert DexAlreadyRegistered();
+        _validateDexPair(pair);
+        isDex[pair] = true;
+        emit DexAdded(pair);
+    }
+
+    /// @notice Alias for remove_dex, clearer naming for pair de-registration.
+    function remove_pair(address pair) external onlyAdmin {
+        if (!isDex[pair]) revert DexNotRegistered();
+        isDex[pair] = false;
+        emit DexRemoved(pair);
+    }
+
     /*//////////////////////////////////////////////////////////////
                            TRANSFER LOGIC (FEE)
     //////////////////////////////////////////////////////////////*/
     /**
-     * Fee applies when tokens are sent TO a registered DEX address (sell/swap out).
+     * Fee applies when tokens are sent TO a registered DEX pair (sell/swap out).
      * No fee for wallet-to-wallet transfers.
      *
      * Implementation uses ERC20's internal _update hook (OZ v5).
@@ -196,5 +242,37 @@ contract FunkyRave is ERC20 {
 
         // Otherwise, normal transfer
         super._update(from, to, amount);
+    }
+
+    function _validateDexPair(address pair) internal view {
+        address token0;
+        address token1;
+        address pairFactory;
+
+        try IDexPair(pair).token0() returns (address t0) {
+            token0 = t0;
+        } catch {
+            revert InvalidDexPair();
+        }
+
+        try IDexPair(pair).token1() returns (address t1) {
+            token1 = t1;
+        } catch {
+            revert InvalidDexPair();
+        }
+
+        try IDexPair(pair).factory() returns (address f) {
+            pairFactory = f;
+        } catch {
+            revert InvalidDexPair();
+        }
+
+        if (token0 != address(this) && token1 != address(this)) {
+            revert PairDoesNotContainToken();
+        }
+
+        if (!isFactory[pairFactory]) {
+            revert FactoryNotRegistered();
+        }
     }
 }

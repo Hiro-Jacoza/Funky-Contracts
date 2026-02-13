@@ -21,14 +21,18 @@ describe("FunkyRave", function () {
     const [admin, feeRecipient, dex, user1, user2] = await ethers.getSigners();
     const FunkyRave = await ethers.getContractFactory("FunkyRave");
     const token = await FunkyRave.deploy(admin.address, feeRecipient.address);
-    return { token, admin, feeRecipient, dex, user1, user2 };
+    const MockDexFactory = await ethers.getContractFactory("MockDexFactory");
+    const factory = await MockDexFactory.deploy();
+    const MockDexPair = await ethers.getContractFactory("MockDexPair");
+    const pair = await MockDexPair.deploy(token.target, dex.address, factory.target);
+    return { token, admin, feeRecipient, dex, user1, user2, factory, pair };
   }
 
   describe("Deployment", function () {
     it("Should set correct name and symbol", async function () {
       const { token } = await loadFixture(deployFunkyRaveFixture);
-      expect(await token.name()).to.equal("FUNKY RAVE");
-      expect(await token.symbol()).to.equal("FUNKY");
+      expect(await token.name()).to.equal("FUNKY");
+      expect(await token.symbol()).to.equal("FUNKY RAVE");
     });
 
     it("Should mint initial supply to admin", async function () {
@@ -115,17 +119,24 @@ describe("FunkyRave", function () {
 
   describe("DEX list", function () {
     it("Admin can add and remove DEX", async function () {
-      const { token, admin, dex } = await loadFixture(deployFunkyRaveFixture);
-      await token.connect(admin).add_dex(dex.address);
-      expect(await token.isDex(dex.address)).to.be.true;
-      await token.connect(admin).remove_dex(dex.address);
-      expect(await token.isDex(dex.address)).to.be.false;
+      const { token, admin, pair, factory } = await loadFixture(deployFunkyRaveFixture);
+      await token.connect(admin).add_factory(factory.target);
+      await token.connect(admin).add_dex(pair.target);
+      expect(await token.isDex(pair.target)).to.be.true;
+      await token.connect(admin).remove_dex(pair.target);
+      expect(await token.isDex(pair.target)).to.be.false;
     });
 
     it("Cannot add zero address as DEX", async function () {
       const { token, admin } = await loadFixture(deployFunkyRaveFixture);
       await expect(token.connect(admin).add_dex(ethers.ZeroAddress))
         .to.be.revertedWithCustomError(token, "InvalidAddress");
+    });
+
+    it("Cannot add pair if factory is not allowlisted", async function () {
+      const { token, admin, pair } = await loadFixture(deployFunkyRaveFixture);
+      await expect(token.connect(admin).add_dex(pair.target))
+        .to.be.revertedWithCustomError(token, "FactoryNotRegistered");
     });
   });
 
@@ -139,52 +150,56 @@ describe("FunkyRave", function () {
     });
 
     it("Transfer to DEX (sell): fee applied based on sender holding tier", async function () {
-      const { token, admin, feeRecipient, dex, user1 } = await loadFixture(deployFunkyRaveFixture);
-      await token.connect(admin).add_dex(dex.address);
+      const { token, admin, feeRecipient, pair, factory, user1 } = await loadFixture(deployFunkyRaveFixture);
+      await token.connect(admin).add_factory(factory.target);
+      await token.connect(admin).add_dex(pair.target);
       // User1 tier 0 (Ignition) => 25% fee
       await token.connect(admin).update_holding_date(user1.address, 0);
       const amount = 1000n * 10n ** 18n;
       await token.connect(admin).transfer(user1.address, amount);
 
       const feeRecipientBefore = await token.balanceOf(feeRecipient.address);
-      await token.connect(user1).transfer(dex.address, amount);
+      await token.connect(user1).transfer(pair.target, amount);
 
       const expectedFee = (amount * 250n) / 1000n; // 25%
       const expectedNet = amount - expectedFee;
-      expect(await token.balanceOf(dex.address)).to.equal(expectedNet);
+      expect(await token.balanceOf(pair.target)).to.equal(expectedNet);
       expect(await token.balanceOf(feeRecipient.address)).to.equal(feeRecipientBefore + expectedFee);
     });
 
     it("Transfer to DEX: different tiers have different fee %", async function () {
-      const { token, admin, feeRecipient, dex, user1 } = await loadFixture(deployFunkyRaveFixture);
-      await token.connect(admin).add_dex(dex.address);
+      const { token, admin, feeRecipient, pair, factory, user1 } = await loadFixture(deployFunkyRaveFixture);
+      await token.connect(admin).add_factory(factory.target);
+      await token.connect(admin).add_dex(pair.target);
       const amount = 1000n * 10n ** 18n;
       await token.connect(admin).transfer(user1.address, amount);
 
       // Tier 721 (Matured) = 3%
       await token.connect(admin).update_holding_date(user1.address, 721);
-      await token.connect(user1).transfer(dex.address, amount);
+      await token.connect(user1).transfer(pair.target, amount);
       const expectedFee721 = (amount * 30n) / 1000n;
       expect(await token.balanceOf(feeRecipient.address)).to.equal(expectedFee721);
-      expect(await token.balanceOf(dex.address)).to.equal(amount - expectedFee721);
+      expect(await token.balanceOf(pair.target)).to.equal(amount - expectedFee721);
     });
 
     it("Transfer to DEX when user tier has 0 fee: no fee taken", async function () {
-      const { token, admin, feeRecipient, dex, user1 } = await loadFixture(deployFunkyRaveFixture);
-      await token.connect(admin).add_dex(dex.address);
+      const { token, admin, feeRecipient, pair, factory, user1 } = await loadFixture(deployFunkyRaveFixture);
+      await token.connect(admin).add_factory(factory.target);
+      await token.connect(admin).add_dex(pair.target);
       await token.connect(admin).update_fee_percentage(0, 0); // set tier 0 to 0%
       await token.connect(admin).update_holding_date(user1.address, 0);
       const amount = 1000n * 10n ** 18n;
       await token.connect(admin).transfer(user1.address, amount);
       const feeRecipientBefore = await token.balanceOf(feeRecipient.address);
-      await token.connect(user1).transfer(dex.address, amount);
+      await token.connect(user1).transfer(pair.target, amount);
       expect(await token.balanceOf(feeRecipient.address)).to.equal(feeRecipientBefore);
-      expect(await token.balanceOf(dex.address)).to.equal(amount);
+      expect(await token.balanceOf(pair.target)).to.equal(amount);
     });
 
     it("transferFrom to DEX uses token owner's tier, not spender tier", async function () {
-      const { token, admin, feeRecipient, dex, user1, user2 } = await loadFixture(deployFunkyRaveFixture);
-      await token.connect(admin).add_dex(dex.address);
+      const { token, admin, feeRecipient, pair, factory, user1, user2 } = await loadFixture(deployFunkyRaveFixture);
+      await token.connect(admin).add_factory(factory.target);
+      await token.connect(admin).add_dex(pair.target);
 
       // Owner (user1) should be charged as Matured (3%), while spender (user2) stays default tier 0 (25%)
       await token.connect(admin).update_holding_date(user1.address, 721);
@@ -194,12 +209,12 @@ describe("FunkyRave", function () {
       await token.connect(user1).approve(user2.address, amount);
 
       const feeRecipientBefore = await token.balanceOf(feeRecipient.address);
-      await token.connect(user2).transferFrom(user1.address, dex.address, amount);
+      await token.connect(user2).transferFrom(user1.address, pair.target, amount);
 
       const expectedFee = (amount * 30n) / 1000n; // user1 tier 721 => 3%
       const expectedNet = amount - expectedFee;
 
-      expect(await token.balanceOf(dex.address)).to.equal(expectedNet);
+      expect(await token.balanceOf(pair.target)).to.equal(expectedNet);
       expect(await token.balanceOf(feeRecipient.address)).to.equal(feeRecipientBefore + expectedFee);
     });
   });
