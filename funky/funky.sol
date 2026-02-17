@@ -215,7 +215,8 @@ contract FunkyRave is ERC20 {
                            TRANSFER LOGIC (FEE)
     //////////////////////////////////////////////////////////////*/
     /**
-     * Fee applies when tokens are sent TO a registered DEX pair (sell/swap out).
+     * Fee applies when tokens are sent TO a registered DEX pair.
+     * This includes regular sell/swap-out transfers and LP-add transfers into pair.
      * No fee for wallet-to-wallet transfers.
      *
      * Implementation uses ERC20's internal _update hook (OZ v5).
