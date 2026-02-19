@@ -4,6 +4,10 @@ const { ethers } = require("hardhat");
 
 describe("FunkyRave", function () {
   const INITIAL_SUPPLY = 30_000_000_000n * 10n ** 18n;
+  const REASON_REGULAR_SYNC = ethers.id("REGULAR_SYNC");
+  const REASON_FIFO_DOWNGRADE = ethers.id("FIFO_DOWNGRADE");
+  const BATCH_MAIN = ethers.id("BATCH_MAIN");
+  const BATCH_ALT = ethers.id("BATCH_ALT");
 
   // Fee tiers: tier key => basis points (e.g. 250 = 25%)
   const FEE_TIERS = {
@@ -106,8 +110,28 @@ describe("FunkyRave", function () {
 
     it("Admin can update user holding date (tier)", async function () {
       const { token, admin, user1 } = await loadFixture(deployFunkyRaveFixture);
-      await token.connect(admin).update_holding_date(user1.address, 181);
+      await token.connect(admin).update_holding_date(user1.address, 181, REASON_REGULAR_SYNC, BATCH_MAIN);
       expect(await token.holdingDate(user1.address)).to.equal(181);
+    });
+
+    it("Non-tier-updater cannot update user holding date", async function () {
+      const { token, user1, user2 } = await loadFixture(deployFunkyRaveFixture);
+      await expect(token.connect(user1).update_holding_date(user2.address, 181, REASON_REGULAR_SYNC, BATCH_MAIN))
+        .to.be.revertedWithCustomError(token, "NotTierUpdater");
+    });
+
+    it("Downgrade with regular sync reason is rejected", async function () {
+      const { token, admin, user1 } = await loadFixture(deployFunkyRaveFixture);
+      await token.connect(admin).update_holding_date(user1.address, 181, REASON_REGULAR_SYNC, BATCH_MAIN);
+      await expect(token.connect(admin).update_holding_date(user1.address, 31, REASON_REGULAR_SYNC, BATCH_ALT))
+        .to.be.revertedWithCustomError(token, "TierDowngradeNotAllowed");
+    });
+
+    it("Downgrade is allowed with explicit downgrade reason", async function () {
+      const { token, admin, user1 } = await loadFixture(deployFunkyRaveFixture);
+      await token.connect(admin).update_holding_date(user1.address, 181, REASON_REGULAR_SYNC, BATCH_MAIN);
+      await token.connect(admin).update_holding_date(user1.address, 31, REASON_FIFO_DOWNGRADE, BATCH_ALT);
+      expect(await token.holdingDate(user1.address)).to.equal(31);
     });
 
     it("Admin can update fee recipient", async function () {
@@ -154,7 +178,7 @@ describe("FunkyRave", function () {
       await token.connect(admin).add_factory(factory.target);
       await token.connect(admin).add_dex(pair.target);
       // User1 tier 0 (Ignition) => 25% fee
-      await token.connect(admin).update_holding_date(user1.address, 0);
+      await token.connect(admin).update_holding_date(user1.address, 0, REASON_REGULAR_SYNC, BATCH_MAIN);
       const amount = 1000n * 10n ** 18n;
       await token.connect(admin).transfer(user1.address, amount);
 
@@ -175,7 +199,7 @@ describe("FunkyRave", function () {
       await token.connect(admin).transfer(user1.address, amount);
 
       // Tier 721 (Matured) = 3%
-      await token.connect(admin).update_holding_date(user1.address, 721);
+      await token.connect(admin).update_holding_date(user1.address, 721, REASON_REGULAR_SYNC, BATCH_MAIN);
       await token.connect(user1).transfer(pair.target, amount);
       const expectedFee721 = (amount * 30n) / 1000n;
       expect(await token.balanceOf(feeRecipient.address)).to.equal(expectedFee721);
@@ -187,7 +211,7 @@ describe("FunkyRave", function () {
       await token.connect(admin).add_factory(factory.target);
       await token.connect(admin).add_dex(pair.target);
       await token.connect(admin).update_fee_percentage(0, 0); // set tier 0 to 0%
-      await token.connect(admin).update_holding_date(user1.address, 0);
+      await token.connect(admin).update_holding_date(user1.address, 0, REASON_REGULAR_SYNC, BATCH_MAIN);
       const amount = 1000n * 10n ** 18n;
       await token.connect(admin).transfer(user1.address, amount);
       const feeRecipientBefore = await token.balanceOf(feeRecipient.address);
@@ -202,7 +226,7 @@ describe("FunkyRave", function () {
       await token.connect(admin).add_dex(pair.target);
 
       // Owner (user1) should be charged as Matured (3%), while spender (user2) stays default tier 0 (25%)
-      await token.connect(admin).update_holding_date(user1.address, 721);
+      await token.connect(admin).update_holding_date(user1.address, 721, REASON_REGULAR_SYNC, BATCH_MAIN);
       const amount = 1000n * 10n ** 18n;
       await token.connect(admin).transfer(user1.address, amount);
 

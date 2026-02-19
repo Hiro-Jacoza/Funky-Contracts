@@ -5,8 +5,8 @@ pragma solidity ^0.8.24;
  * FUNKY RAVE (FUNKY)
  * - Initial supply: 30,000,000,000
  * - 18 decimals
- * - Fee on "purchases" only: when tokens are sent FROM a registered DEX address to a buyer.
- * - Configurable fee %, fee recipient, DEX list, and admin list.
+ * - Fee on transfers sent TO a registered DEX pair (sell/LP-add path).
+ * - Configurable fee %, fee recipient, DEX/factory list, and governance roles.
  *
  * Requires OpenZeppelin ^5.0:
  *   forge install OpenZeppelin/openzeppelin-contracts@v5.0.2
@@ -23,18 +23,30 @@ interface IDexPair {
 }
 
 contract FunkyRave is ERC20 {
+    bytes32 private constant REASON_REGULAR_SYNC = keccak256("REGULAR_SYNC");
+
     /*//////////////////////////////////////////////////////////////
                                 EVENTS
     //////////////////////////////////////////////////////////////*/
     event FeePercentageUpdated(uint16 oldFeePercent, uint16 newFeePercent);
-    event HoldingDateUpdated(address indexed user, uint16 oldHoldingDate, uint16 newHoldingDate);
+    event HoldingDateUpdated(
+        address indexed user,
+        uint16 oldHoldingDate,
+        uint16 newHoldingDate,
+        bytes32 indexed reasonCode,
+        bytes32 indexed batchId,
+        address updater
+    );
     event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
+    event FeeExemptUpdated(address indexed account, bool isExempt, bytes32 indexed reasonCode);
     event DexAdded(address indexed dex);
     event DexRemoved(address indexed dex);
     event FactoryAdded(address indexed factory);
     event FactoryRemoved(address indexed factory);
     event AdminAdded(address indexed admin);
     event AdminRemoved(address indexed admin);
+    event TierUpdaterAdded(address indexed updater);
+    event TierUpdaterRemoved(address indexed updater);
 
     /*//////////////////////////////////////////////////////////////
                                 ERRORS
@@ -47,10 +59,17 @@ contract FunkyRave is ERC20 {
     error AdminAlreadyRegistered();
     error AdminNotRegistered();
     error CannotRemoveLastAdmin();
+    error NotTierUpdater();
+    error TierUpdaterAlreadyRegistered();
+    error TierUpdaterNotRegistered();
+    error CannotRemoveLastTierUpdater();
     error FactoryAlreadyRegistered();
     error FactoryNotRegistered();
     error InvalidDexPair();
     error PairDoesNotContainToken();
+    error InvalidReasonCode();
+    error InvalidBatchId();
+    error TierDowngradeNotAllowed();
 
     /*//////////////////////////////////////////////////////////////
                                 STORAGE
@@ -59,17 +78,24 @@ contract FunkyRave is ERC20 {
     mapping(uint16 => uint16) public feePercent; // default 10%
     mapping(address => uint16) public holdingDate; // default 10%
     address public feeRecipient;
+    mapping(address => bool) public isFeeExempt;
 
     mapping(address => bool) public isDex;   // DEX allowlist
     mapping(address => bool) public isFactory; // Allowed DEX factories
     mapping(address => bool) public isAdmin; // Admin allowlist
     uint256 private adminCount;
+    mapping(address => bool) public isTierUpdater;
+    uint256 private tierUpdaterCount;
 
     /*//////////////////////////////////////////////////////////////
                                 MODIFIERS
     //////////////////////////////////////////////////////////////*/
     modifier onlyAdmin() {
         if (!isAdmin[msg.sender]) revert NotAdmin();
+        _;
+    }
+    modifier onlyTierUpdater() {
+        if (!isTierUpdater[msg.sender]) revert NotTierUpdater();
         _;
     }
 
@@ -106,6 +132,9 @@ contract FunkyRave is ERC20 {
         isAdmin[initialAdmin] = true;
         adminCount = 1;
         emit AdminAdded(initialAdmin);
+        isTierUpdater[initialAdmin] = true;
+        tierUpdaterCount = 1;
+        emit TierUpdaterAdded(initialAdmin);
 
         // Mint initial supply: 30,000,000,000 * 10^18
         _mint(initialAdmin, 30_000_000_000e18);
@@ -128,6 +157,22 @@ contract FunkyRave is ERC20 {
         isAdmin[adminToRemove] = false;
         adminCount -= 1;
         emit AdminRemoved(adminToRemove);
+    }
+
+    function add_tier_updater(address updater) external onlyAdmin {
+        if (updater == address(0)) revert InvalidAddress();
+        if (isTierUpdater[updater]) revert TierUpdaterAlreadyRegistered();
+        isTierUpdater[updater] = true;
+        tierUpdaterCount += 1;
+        emit TierUpdaterAdded(updater);
+    }
+
+    function remove_tier_updater(address updater) external onlyAdmin {
+        if (!isTierUpdater[updater]) revert TierUpdaterNotRegistered();
+        if (tierUpdaterCount == 1) revert CannotRemoveLastTierUpdater();
+        isTierUpdater[updater] = false;
+        tierUpdaterCount -= 1;
+        emit TierUpdaterRemoved(updater);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -158,13 +203,18 @@ contract FunkyRave is ERC20 {
         emit FeePercentageUpdated(old, _newFeePercent);
     }
 
-    /// @notice Update the holding date
-    /// @dev Maps to: update_holding_date(holder, hold_date)
-    function update_holding_date(address user, uint16 _holdingDate) external onlyAdmin {
+    /// @notice Update user's holding-date tier used as on-chain fee source of truth.
+    /// @dev Tier is monotonically increasing by default. Downgrade requires non-regular reasonCode.
+    function update_holding_date(address user, uint16 _holdingDate, bytes32 reasonCode, bytes32 batchId) external onlyTierUpdater {
         if (user == address(0)) revert InvalidAddress();
+        if (reasonCode == bytes32(0)) revert InvalidReasonCode();
+        if (batchId == bytes32(0)) revert InvalidBatchId();
         uint16 old = holdingDate[user];
+        if (_holdingDate < old) {
+            if (reasonCode == REASON_REGULAR_SYNC) revert TierDowngradeNotAllowed();
+        }
         holdingDate[user] = _holdingDate;
-        emit HoldingDateUpdated(user, old, _holdingDate);
+        emit HoldingDateUpdated(user, old, _holdingDate, reasonCode, batchId, msg.sender);
     }
 
     /// @notice Update the fee recipient address
@@ -174,6 +224,14 @@ contract FunkyRave is ERC20 {
         address old = feeRecipient;
         feeRecipient = newRecipient;
         emit FeeRecipientUpdated(old, newRecipient);
+    }
+
+    /// @notice Set fee exemption for specific addresses (e.g., treasury LP operations)
+    function set_fee_exempt(address account, bool exempt, bytes32 reasonCode) external onlyAdmin {
+        if (account == address(0)) revert InvalidAddress();
+        if (reasonCode == bytes32(0)) revert InvalidReasonCode();
+        isFeeExempt[account] = exempt;
+        emit FeeExemptUpdated(account, exempt, reasonCode);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -230,7 +288,7 @@ contract FunkyRave is ERC20 {
 
         // Apply fee only on sell/swap-out to registered DEX.
         // Fee tier must come from the token owner (from), not msg.sender (router/spender).
-        if (isDex[to] && feePercent[holdingDate[from]] > 0 && feeRecipient != address(0)) {
+        if (isDex[to] && !isFeeExempt[from] && feePercent[holdingDate[from]] > 0 && feeRecipient != address(0)) {
             uint256 fee = (amount * feePercent[holdingDate[from]]) / 1000;
             if (fee > 0) {
                 // Transfer fee to feeRecipient
