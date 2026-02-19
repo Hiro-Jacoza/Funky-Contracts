@@ -6,8 +6,11 @@ describe("FunkyRave", function () {
   const INITIAL_SUPPLY = 30_000_000_000n * 10n ** 18n;
   const REASON_REGULAR_SYNC = ethers.id("REGULAR_SYNC");
   const REASON_FIFO_DOWNGRADE = ethers.id("FIFO_DOWNGRADE");
+  const REASON_TREASURY_OP = ethers.id("TREASURY_OP");
   const BATCH_MAIN = ethers.id("BATCH_MAIN");
   const BATCH_ALT = ethers.id("BATCH_ALT");
+  const EXEMPT_CAT_TREASURY_LP = ethers.id("TREASURY_LP_BOOTSTRAP");
+  const REQUEST_EXEMPT_1 = ethers.id("REQUEST_EXEMPT_1");
 
   // Fee tiers: tier key => basis points (e.g. 250 = 25%)
   const FEE_TIERS = {
@@ -139,6 +142,60 @@ describe("FunkyRave", function () {
       await token.connect(admin).update_fee_recipient(user1.address);
       expect(await token.feeRecipient()).to.equal(user1.address);
     });
+
+    it("Admin can set and unset fee exemption with category", async function () {
+      const { token, admin, user1 } = await loadFixture(deployFunkyRaveFixture);
+      await token.connect(admin).set_fee_exempt(
+        user1.address,
+        true,
+        REASON_TREASURY_OP,
+        EXEMPT_CAT_TREASURY_LP,
+        REQUEST_EXEMPT_1,
+        admin.address,
+        admin.address
+      );
+      expect(await token.isFeeExempt(user1.address)).to.equal(true);
+
+      await token.connect(admin).set_fee_exempt(
+        user1.address,
+        false,
+        REASON_TREASURY_OP,
+        EXEMPT_CAT_TREASURY_LP,
+        ethers.id("REQUEST_EXEMPT_2"),
+        admin.address,
+        admin.address
+      );
+      expect(await token.isFeeExempt(user1.address)).to.equal(false);
+    });
+
+    it("Reverts fee exemption when cap is exceeded", async function () {
+      const { token, admin } = await loadFixture(deployFunkyRaveFixture);
+
+      for (let i = 1; i <= 20; i++) {
+        const targetAddress = ethers.Wallet.createRandom().address;
+        await token.connect(admin).set_fee_exempt(
+          targetAddress,
+          true,
+          REASON_TREASURY_OP,
+          EXEMPT_CAT_TREASURY_LP,
+          ethers.id(`REQUEST_CAP_${i}`),
+          admin.address,
+          admin.address
+        );
+      }
+
+      await expect(
+        token.connect(admin).set_fee_exempt(
+          ethers.Wallet.createRandom().address,
+          true,
+          REASON_TREASURY_OP,
+          EXEMPT_CAT_TREASURY_LP,
+          ethers.id("REQUEST_CAP_21"),
+          admin.address,
+          admin.address
+        )
+      ).to.be.revertedWithCustomError(token, "ExemptAddressCapReached");
+    });
   });
 
   describe("DEX list", function () {
@@ -240,6 +297,30 @@ describe("FunkyRave", function () {
 
       expect(await token.balanceOf(pair.target)).to.equal(expectedNet);
       expect(await token.balanceOf(feeRecipient.address)).to.equal(feeRecipientBefore + expectedFee);
+    });
+
+    it("Fee-exempt sender is not charged when transferring to DEX pair", async function () {
+      const { token, admin, feeRecipient, pair, factory, user1 } = await loadFixture(deployFunkyRaveFixture);
+      await token.connect(admin).add_factory(factory.target);
+      await token.connect(admin).add_dex(pair.target);
+      await token.connect(admin).update_holding_date(user1.address, 0, REASON_REGULAR_SYNC, BATCH_MAIN);
+      await token.connect(admin).set_fee_exempt(
+        user1.address,
+        true,
+        REASON_TREASURY_OP,
+        EXEMPT_CAT_TREASURY_LP,
+        ethers.id("REQUEST_EXEMPT_SELL"),
+        admin.address,
+        admin.address
+      );
+
+      const amount = 1000n * 10n ** 18n;
+      await token.connect(admin).transfer(user1.address, amount);
+      const feeRecipientBefore = await token.balanceOf(feeRecipient.address);
+      await token.connect(user1).transfer(pair.target, amount);
+
+      expect(await token.balanceOf(feeRecipient.address)).to.equal(feeRecipientBefore);
+      expect(await token.balanceOf(pair.target)).to.equal(amount);
     });
   });
 });

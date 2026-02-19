@@ -24,6 +24,11 @@ interface IDexPair {
 
 contract FunkyRave is ERC20 {
     bytes32 private constant REASON_REGULAR_SYNC = keccak256("REGULAR_SYNC");
+    bytes32 private constant EXEMPT_CAT_TREASURY_LP = keccak256("TREASURY_LP_BOOTSTRAP");
+    bytes32 private constant EXEMPT_CAT_MARKET_MAKER = keccak256("MARKET_MAKER_CONTROLLED");
+    bytes32 private constant EXEMPT_CAT_BRIDGE_OPS = keccak256("BRIDGE_OPERATIONAL");
+    bytes32 private constant EXEMPT_CAT_INCIDENT_TEMP = keccak256("INCIDENT_CONTAINMENT_TEMP");
+    uint256 public constant MAX_EXEMPT_ADDRESSES = 20;
 
     /*//////////////////////////////////////////////////////////////
                                 EVENTS
@@ -38,7 +43,16 @@ contract FunkyRave is ERC20 {
         address updater
     );
     event FeeRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
-    event FeeExemptUpdated(address indexed account, bool isExempt, bytes32 indexed reasonCode);
+    event FeeExemptUpdated(
+        address indexed account,
+        bool isExempt,
+        bytes32 indexed reasonCode,
+        bytes32 indexed categoryCode,
+        bytes32 requestId,
+        address proposer,
+        address approver,
+        address executor
+    );
     event DexAdded(address indexed dex);
     event DexRemoved(address indexed dex);
     event FactoryAdded(address indexed factory);
@@ -70,6 +84,9 @@ contract FunkyRave is ERC20 {
     error InvalidReasonCode();
     error InvalidBatchId();
     error TierDowngradeNotAllowed();
+    error InvalidExemptCategory();
+    error ExemptAddressCapReached();
+    error InvalidRequestId();
 
     /*//////////////////////////////////////////////////////////////
                                 STORAGE
@@ -86,6 +103,7 @@ contract FunkyRave is ERC20 {
     uint256 private adminCount;
     mapping(address => bool) public isTierUpdater;
     uint256 private tierUpdaterCount;
+    uint256 public exemptAddressCount;
 
     /*//////////////////////////////////////////////////////////////
                                 MODIFIERS
@@ -227,11 +245,28 @@ contract FunkyRave is ERC20 {
     }
 
     /// @notice Set fee exemption for specific addresses (e.g., treasury LP operations)
-    function set_fee_exempt(address account, bool exempt, bytes32 reasonCode) external onlyAdmin {
+    function set_fee_exempt(
+        address account,
+        bool exempt,
+        bytes32 reasonCode,
+        bytes32 categoryCode,
+        bytes32 requestId,
+        address proposer,
+        address approver
+    ) external onlyAdmin {
         if (account == address(0)) revert InvalidAddress();
         if (reasonCode == bytes32(0)) revert InvalidReasonCode();
+        if (requestId == bytes32(0)) revert InvalidRequestId();
+        if (!_isAllowedExemptCategory(categoryCode)) revert InvalidExemptCategory();
+        bool currentlyExempt = isFeeExempt[account];
+        if (exempt && !currentlyExempt) {
+            if (exemptAddressCount >= MAX_EXEMPT_ADDRESSES) revert ExemptAddressCapReached();
+            exemptAddressCount += 1;
+        } else if (!exempt && currentlyExempt) {
+            exemptAddressCount -= 1;
+        }
         isFeeExempt[account] = exempt;
-        emit FeeExemptUpdated(account, exempt, reasonCode);
+        emit FeeExemptUpdated(account, exempt, reasonCode, categoryCode, requestId, proposer, approver, msg.sender);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -333,5 +368,14 @@ contract FunkyRave is ERC20 {
         if (!isFactory[pairFactory]) {
             revert FactoryNotRegistered();
         }
+    }
+
+    function _isAllowedExemptCategory(bytes32 categoryCode) internal pure returns (bool) {
+        return (
+            categoryCode == EXEMPT_CAT_TREASURY_LP ||
+            categoryCode == EXEMPT_CAT_MARKET_MAKER ||
+            categoryCode == EXEMPT_CAT_BRIDGE_OPS ||
+            categoryCode == EXEMPT_CAT_INCIDENT_TEMP
+        );
     }
 }
