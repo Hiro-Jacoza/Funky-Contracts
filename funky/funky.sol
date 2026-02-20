@@ -77,6 +77,7 @@ contract FunkyRave is ERC20 {
     error TierUpdaterAlreadyRegistered();
     error TierUpdaterNotRegistered();
     error CannotRemoveLastTierUpdater();
+    error TierUpdaterMustBeContract();
     error FactoryAlreadyRegistered();
     error FactoryNotRegistered();
     error InvalidDexPair();
@@ -150,9 +151,9 @@ contract FunkyRave is ERC20 {
         isAdmin[initialAdmin] = true;
         adminCount = 1;
         emit AdminAdded(initialAdmin);
-        isTierUpdater[initialAdmin] = true;
-        tierUpdaterCount = 1;
-        emit TierUpdaterAdded(initialAdmin);
+        // Tier updater must be a contract-controlled operator (e.g., multisig module).
+        // Do not auto-grant updater role to deployer EOA.
+        tierUpdaterCount = 0;
 
         // Mint initial supply: 30,000,000,000 * 10^18
         _mint(initialAdmin, 30_000_000_000e18);
@@ -179,6 +180,7 @@ contract FunkyRave is ERC20 {
 
     function add_tier_updater(address updater) external onlyAdmin {
         if (updater == address(0)) revert InvalidAddress();
+        if (updater.code.length == 0) revert TierUpdaterMustBeContract();
         if (isTierUpdater[updater]) revert TierUpdaterAlreadyRegistered();
         isTierUpdater[updater] = true;
         tierUpdaterCount += 1;

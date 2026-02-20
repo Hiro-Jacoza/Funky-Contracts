@@ -28,11 +28,14 @@ describe("FunkyRave", function () {
     const [admin, feeRecipient, dex, user1, user2] = await ethers.getSigners();
     const FunkyRave = await ethers.getContractFactory("FunkyRave");
     const token = await FunkyRave.deploy(admin.address, feeRecipient.address);
+    const MockTierUpdater = await ethers.getContractFactory("MockTierUpdater");
+    const tierUpdater = await MockTierUpdater.deploy();
+    await token.connect(admin).add_tier_updater(tierUpdater.target);
     const MockDexFactory = await ethers.getContractFactory("MockDexFactory");
     const factory = await MockDexFactory.deploy();
     const MockDexPair = await ethers.getContractFactory("MockDexPair");
     const pair = await MockDexPair.deploy(token.target, dex.address, factory.target);
-    return { token, admin, feeRecipient, dex, user1, user2, factory, pair };
+    return { token, admin, feeRecipient, dex, user1, user2, factory, pair, tierUpdater };
   }
 
   describe("Deployment", function () {
@@ -52,6 +55,11 @@ describe("FunkyRave", function () {
       const { token, admin, feeRecipient } = await loadFixture(deployFunkyRaveFixture);
       expect(await token.isAdmin(admin.address)).to.be.true;
       expect(await token.feeRecipient()).to.equal(feeRecipient.address);
+    });
+
+    it("Should not auto-grant tier updater role to deployer EOA", async function () {
+      const { token, admin } = await loadFixture(deployFunkyRaveFixture);
+      expect(await token.isTierUpdater(admin.address)).to.be.false;
     });
 
     it("Should revert if initialAdmin or initialFeeRecipient is zero", async function () {
@@ -96,6 +104,12 @@ describe("FunkyRave", function () {
       await expect(token.connect(admin).remove_admin(admin.address))
         .to.be.revertedWithCustomError(token, "CannotRemoveLastAdmin");
     });
+
+    it("Rejects EOA for tier updater role", async function () {
+      const { token, admin, user1 } = await loadFixture(deployFunkyRaveFixture);
+      await expect(token.connect(admin).add_tier_updater(user1.address))
+        .to.be.revertedWithCustomError(token, "TierUpdaterMustBeContract");
+    });
   });
 
   describe("Fee configuration", function () {
@@ -111,9 +125,9 @@ describe("FunkyRave", function () {
         .to.be.revertedWithCustomError(token, "FeeTooHigh");
     });
 
-    it("Admin can update user holding date (tier)", async function () {
-      const { token, admin, user1 } = await loadFixture(deployFunkyRaveFixture);
-      await token.connect(admin).update_holding_date(user1.address, 181, REASON_REGULAR_SYNC, BATCH_MAIN);
+    it("Tier updater contract can update user holding date (tier)", async function () {
+      const { token, tierUpdater, user1 } = await loadFixture(deployFunkyRaveFixture);
+      await tierUpdater.updateHoldingDate(token.target, user1.address, 181, REASON_REGULAR_SYNC, BATCH_MAIN);
       expect(await token.holdingDate(user1.address)).to.equal(181);
     });
 
@@ -124,16 +138,16 @@ describe("FunkyRave", function () {
     });
 
     it("Downgrade with regular sync reason is rejected", async function () {
-      const { token, admin, user1 } = await loadFixture(deployFunkyRaveFixture);
-      await token.connect(admin).update_holding_date(user1.address, 181, REASON_REGULAR_SYNC, BATCH_MAIN);
-      await expect(token.connect(admin).update_holding_date(user1.address, 31, REASON_REGULAR_SYNC, BATCH_ALT))
+      const { token, tierUpdater, user1 } = await loadFixture(deployFunkyRaveFixture);
+      await tierUpdater.updateHoldingDate(token.target, user1.address, 181, REASON_REGULAR_SYNC, BATCH_MAIN);
+      await expect(tierUpdater.updateHoldingDate(token.target, user1.address, 31, REASON_REGULAR_SYNC, BATCH_ALT))
         .to.be.revertedWithCustomError(token, "TierDowngradeNotAllowed");
     });
 
     it("Downgrade is allowed with explicit downgrade reason", async function () {
-      const { token, admin, user1 } = await loadFixture(deployFunkyRaveFixture);
-      await token.connect(admin).update_holding_date(user1.address, 181, REASON_REGULAR_SYNC, BATCH_MAIN);
-      await token.connect(admin).update_holding_date(user1.address, 31, REASON_FIFO_DOWNGRADE, BATCH_ALT);
+      const { token, tierUpdater, user1 } = await loadFixture(deployFunkyRaveFixture);
+      await tierUpdater.updateHoldingDate(token.target, user1.address, 181, REASON_REGULAR_SYNC, BATCH_MAIN);
+      await tierUpdater.updateHoldingDate(token.target, user1.address, 31, REASON_FIFO_DOWNGRADE, BATCH_ALT);
       expect(await token.holdingDate(user1.address)).to.equal(31);
     });
 
@@ -231,11 +245,11 @@ describe("FunkyRave", function () {
     });
 
     it("Transfer to DEX (sell): fee applied based on sender holding tier", async function () {
-      const { token, admin, feeRecipient, pair, factory, user1 } = await loadFixture(deployFunkyRaveFixture);
+      const { token, admin, feeRecipient, pair, factory, user1, tierUpdater } = await loadFixture(deployFunkyRaveFixture);
       await token.connect(admin).add_factory(factory.target);
       await token.connect(admin).add_dex(pair.target);
       // User1 tier 0 (Ignition) => 25% fee
-      await token.connect(admin).update_holding_date(user1.address, 0, REASON_REGULAR_SYNC, BATCH_MAIN);
+      await tierUpdater.updateHoldingDate(token.target, user1.address, 0, REASON_REGULAR_SYNC, BATCH_MAIN);
       const amount = 1000n * 10n ** 18n;
       await token.connect(admin).transfer(user1.address, amount);
 
@@ -249,14 +263,14 @@ describe("FunkyRave", function () {
     });
 
     it("Transfer to DEX: different tiers have different fee %", async function () {
-      const { token, admin, feeRecipient, pair, factory, user1 } = await loadFixture(deployFunkyRaveFixture);
+      const { token, admin, feeRecipient, pair, factory, user1, tierUpdater } = await loadFixture(deployFunkyRaveFixture);
       await token.connect(admin).add_factory(factory.target);
       await token.connect(admin).add_dex(pair.target);
       const amount = 1000n * 10n ** 18n;
       await token.connect(admin).transfer(user1.address, amount);
 
       // Tier 721 (Matured) = 3%
-      await token.connect(admin).update_holding_date(user1.address, 721, REASON_REGULAR_SYNC, BATCH_MAIN);
+      await tierUpdater.updateHoldingDate(token.target, user1.address, 721, REASON_REGULAR_SYNC, BATCH_MAIN);
       await token.connect(user1).transfer(pair.target, amount);
       const expectedFee721 = (amount * 30n) / 1000n;
       expect(await token.balanceOf(feeRecipient.address)).to.equal(expectedFee721);
@@ -264,11 +278,11 @@ describe("FunkyRave", function () {
     });
 
     it("Transfer to DEX when user tier has 0 fee: no fee taken", async function () {
-      const { token, admin, feeRecipient, pair, factory, user1 } = await loadFixture(deployFunkyRaveFixture);
+      const { token, admin, feeRecipient, pair, factory, user1, tierUpdater } = await loadFixture(deployFunkyRaveFixture);
       await token.connect(admin).add_factory(factory.target);
       await token.connect(admin).add_dex(pair.target);
       await token.connect(admin).update_fee_percentage(0, 0); // set tier 0 to 0%
-      await token.connect(admin).update_holding_date(user1.address, 0, REASON_REGULAR_SYNC, BATCH_MAIN);
+      await tierUpdater.updateHoldingDate(token.target, user1.address, 0, REASON_REGULAR_SYNC, BATCH_MAIN);
       const amount = 1000n * 10n ** 18n;
       await token.connect(admin).transfer(user1.address, amount);
       const feeRecipientBefore = await token.balanceOf(feeRecipient.address);
@@ -278,12 +292,12 @@ describe("FunkyRave", function () {
     });
 
     it("transferFrom to DEX uses token owner's tier, not spender tier", async function () {
-      const { token, admin, feeRecipient, pair, factory, user1, user2 } = await loadFixture(deployFunkyRaveFixture);
+      const { token, admin, feeRecipient, pair, factory, user1, user2, tierUpdater } = await loadFixture(deployFunkyRaveFixture);
       await token.connect(admin).add_factory(factory.target);
       await token.connect(admin).add_dex(pair.target);
 
       // Owner (user1) should be charged as Matured (3%), while spender (user2) stays default tier 0 (25%)
-      await token.connect(admin).update_holding_date(user1.address, 721, REASON_REGULAR_SYNC, BATCH_MAIN);
+      await tierUpdater.updateHoldingDate(token.target, user1.address, 721, REASON_REGULAR_SYNC, BATCH_MAIN);
       const amount = 1000n * 10n ** 18n;
       await token.connect(admin).transfer(user1.address, amount);
 
@@ -300,10 +314,10 @@ describe("FunkyRave", function () {
     });
 
     it("Fee-exempt sender is not charged when transferring to DEX pair", async function () {
-      const { token, admin, feeRecipient, pair, factory, user1 } = await loadFixture(deployFunkyRaveFixture);
+      const { token, admin, feeRecipient, pair, factory, user1, tierUpdater } = await loadFixture(deployFunkyRaveFixture);
       await token.connect(admin).add_factory(factory.target);
       await token.connect(admin).add_dex(pair.target);
-      await token.connect(admin).update_holding_date(user1.address, 0, REASON_REGULAR_SYNC, BATCH_MAIN);
+      await tierUpdater.updateHoldingDate(token.target, user1.address, 0, REASON_REGULAR_SYNC, BATCH_MAIN);
       await token.connect(admin).set_fee_exempt(
         user1.address,
         true,
