@@ -33,6 +33,11 @@ jobs:
   compile-and-test:
     name: Compile & Test
     runs-on: ubuntu-latest
+    outputs:
+      compile-funky: ${{ steps.compile-funky.outcome }}
+      test-funky: ${{ steps.test-funky.outcome }}
+      compile-nft: ${{ steps.compile-nft.outcome }}
+      test-nft: ${{ steps.test-nft.outcome }}
     steps:
       - uses: actions/checkout@v4
 
@@ -44,21 +49,35 @@ jobs:
       - run: npm ci
 
       - name: Compile FUNKY Token
+        id: compile-funky
         run: npx hardhat compile
+        continue-on-error: true
 
       - name: Test FUNKY Token
+        id: test-funky
         run: npx hardhat test test/FunkyRave.test.js
+        continue-on-error: true
 
       - name: Compile FUNKY NFT
+        id: compile-nft
         run: npx hardhat compile --config hardhat.config.nft.js
+        continue-on-error: true
 
       - name: Test FUNKY NFT
+        id: test-nft
         run: npx hardhat test --config hardhat.config.nft.js test/FunkyNFT.test.js
+        continue-on-error: true
+
+      - name: Fail if checks failed
+        if: steps.compile-funky.outcome == 'failure' || steps.test-funky.outcome == 'failure' || steps.compile-nft.outcome == 'failure' || steps.test-nft.outcome == 'failure'
+        run: exit 1
 
   gas-report:
     name: Gas Report
     runs-on: ubuntu-latest
     needs: compile-and-test
+    outputs:
+      gas-output: ${{ steps.gas.outputs.gas-report }}
     steps:
       - uses: actions/checkout@v4
 
@@ -70,7 +89,12 @@ jobs:
       - run: npm ci
 
       - name: Gas Report
-        run: REPORT_GAS=true npx hardhat test test/FunkyRave.test.js
+        id: gas
+        run: |
+          OUTPUT=$(REPORT_GAS=true npx hardhat test test/FunkyRave.test.js 2>&1 | tail -30)
+          echo "gas-report<<EOF" >> $GITHUB_OUTPUT
+          echo "$OUTPUT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
         env:
           REPORT_GAS: "true"
 
@@ -78,6 +102,8 @@ jobs:
     name: Slither Security Scan
     runs-on: ubuntu-latest
     needs: compile-and-test
+    outputs:
+      security-result: ${{ steps.slither.outcome }}
     steps:
       - uses: actions/checkout@v4
 
@@ -89,6 +115,7 @@ jobs:
       - run: npm ci
 
       - name: Run Slither
+        id: slither
         uses: crytic/slither-action@v0.4.0
         continue-on-error: true
         with:
@@ -114,4 +141,78 @@ jobs:
             const hasAdr = files.some(f => f.filename.startsWith('docs/decisions/') && !f.filename.endsWith('template.md') && !f.filename.endsWith('README.md'));
             if (!hasAdr) {
               core.setFailed('This PR requires an ADR in docs/decisions/. Create one before merging.');
+            }
+
+  report-to-slack:
+    name: Report to Client
+    needs: [compile-and-test, gas-report, security-scan]
+    if: always() && github.event_name == 'pull_request' && secrets.SLACK_REPORTS_WEBHOOK != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get changed files
+        id: changes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 20
+            });
+            const summary = files.map(f => `${f.status === 'added' ? '+' : f.status === 'removed' ? '-' : '~'} ${f.filename} (+${f.additions} -${f.deletions})`).join('\n');
+            core.setOutput('files', summary);
+            core.setOutput('count', files.length);
+
+      - name: Post report to Slack
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_REPORTS_WEBHOOK }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "${{ needs.compile-and-test.result == 'success' && '✅' || '❌' }} [Contracts] Verification Report"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*<${{ github.event.pull_request.html_url }}|PR #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}>*\nby `${{ github.event.pull_request.user.login }}`  |  ${{ steps.changes.outputs.count }} files changed"
+                  }
+                },
+                {
+                  "type": "divider"
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Contract Checks:*\n${{ needs.compile-and-test.outputs.compile-funky == 'success' && '✅' || '❌' }} FUNKY Token Compile\n${{ needs.compile-and-test.outputs.test-funky == 'success' && '✅' || '❌' }} FUNKY Token Tests\n${{ needs.compile-and-test.outputs.compile-nft == 'success' && '✅' || '❌' }} FUNKY NFT Compile\n${{ needs.compile-and-test.outputs.test-nft == 'success' && '✅' || '❌' }} FUNKY NFT Tests\n${{ needs.security-scan.outputs.security-result == 'success' && '✅' || '⚠️' }} Slither Security Scan"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*Changed Files:*\n```${{ steps.changes.outputs.files }}```"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": ":robot_face: repo:`Funky-Contracts` type:`ci_report` pr:`${{ github.event.pull_request.number }}` result:`${{ needs.compile-and-test.result == 'success' && 'pass' || 'fail' }}` security:`${{ needs.security-scan.outputs.security-result }}`"
+                    }
+                  ]
+                }
+              ]
             }

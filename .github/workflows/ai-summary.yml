@@ -1,0 +1,136 @@
+name: AI PR Summary
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    branches: [main]
+
+jobs:
+  ai-summary:
+    name: Generate AI Summary for Client
+    if: ${{ secrets.ANTHROPIC_API_KEY != '' && secrets.SLACK_REPORTS_WEBHOOK != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get PR diff
+        id: diff
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+              per_page: 50
+            });
+
+            let diffSummary = files.map(f => {
+              return `File: ${f.filename} (${f.status}, +${f.additions} -${f.deletions})\nPatch:\n${(f.patch || '').substring(0, 500)}`;
+            }).join('\n---\n');
+
+            if (diffSummary.length > 8000) {
+              diffSummary = diffSummary.substring(0, 8000) + '\n... (truncated)';
+            }
+
+            core.setOutput('diff', diffSummary);
+            core.setOutput('file-count', files.length);
+            core.setOutput('additions', files.reduce((sum, f) => sum + f.additions, 0));
+            core.setOutput('deletions', files.reduce((sum, f) => sum + f.deletions, 0));
+
+      - name: Get PR details
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            core.setOutput('title', pr.title);
+            core.setOutput('body', (pr.body || '').substring(0, 2000));
+            core.setOutput('author', pr.user.login);
+            core.setOutput('url', pr.html_url);
+            core.setOutput('number', pr.number);
+
+      - name: Generate AI summary
+        id: ai
+        run: |
+          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: ${{ secrets.ANTHROPIC_API_KEY }}" \
+            -H "anthropic-version: 2023-06-01" \
+            -d @- <<'REQEOF'
+          {
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 1024,
+            "messages": [
+              {
+                "role": "user",
+                "content": "You are a development assistant for the FUNKY.FAN project (a gacha token/NFT platform on BSC blockchain). Generate a brief, client-friendly summary of this Smart Contract Pull Request for a non-technical client viewing Slack.\n\nRules:\n- Write in simple, clear language (no jargon)\n- Maximum 5 bullet points\n- Focus on WHAT changed in the contract behavior and WHY\n- ALWAYS mention security implications clearly\n- Flag if this requires redeployment or migration\n- Flag if token economics are affected\n- Keep it under 300 words total\n- Do NOT use markdown headers, just plain text with bullet points\n\nPR Title: ${{ steps.pr.outputs.title }}\nPR Description:\n${{ steps.pr.outputs.body }}\n\nCode Changes (${{ steps.diff.outputs.file-count }} files, +${{ steps.diff.outputs.additions }} -${{ steps.diff.outputs.deletions }}):\n${{ steps.diff.outputs.diff }}"
+              }
+            ]
+          }
+          REQEOF
+          )
+
+          SUMMARY=$(echo "$RESPONSE" | python3 -c "
+          import sys, json
+          try:
+              data = json.load(sys.stdin)
+              if 'content' in data and len(data['content']) > 0:
+                  print(data['content'][0]['text'])
+              elif 'error' in data:
+                  print('AI summary unavailable: ' + data['error'].get('message', 'unknown error'))
+              else:
+                  print('AI summary unavailable')
+          except:
+              print('AI summary unavailable')
+          ")
+
+          echo "summary<<EOF" >> $GITHUB_OUTPUT
+          echo "$SUMMARY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Post AI summary to Slack
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_REPORTS_WEBHOOK }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "🤖 [Contracts] AI Summary — PR #${{ steps.pr.outputs.number }}"
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*<${{ steps.pr.outputs.url }}|${{ steps.pr.outputs.title }}>*\nby `${{ steps.pr.outputs.author }}`  |  ${{ steps.diff.outputs.file-count }} files  |  +${{ steps.diff.outputs.additions }} -${{ steps.diff.outputs.deletions }}"
+                  }
+                },
+                {
+                  "type": "divider"
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ steps.ai.outputs.summary }}"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": ":robot_face: repo:`Funky-Contracts` type:`ai_summary` pr:`${{ steps.pr.outputs.number }}` model:`claude-sonnet-4-20250514`"
+                    }
+                  ]
+                }
+              ]
+            }
