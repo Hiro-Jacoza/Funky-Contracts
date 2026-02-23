@@ -3,7 +3,7 @@ name: Slack Notifications
 on:
   issues:
     types: [opened, closed, reopened]
-  pull_request:
+  pull_request_target:
     types: [opened, closed, ready_for_review]
   workflow_run:
     workflows: ["Contract CI"]
@@ -12,6 +12,7 @@ on:
 jobs:
   notify:
     name: Notify Slack
+    if: ${{ secrets.SLACK_GITHUB_WEBHOOK != '' }}
     runs-on: ubuntu-latest
     steps:
       - name: Issue notification
@@ -26,7 +27,7 @@ jobs:
             }
 
       - name: PR notification
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request_target'
         uses: slackapi/slack-github-action@v2.0.0
         with:
           webhook: ${{ secrets.SLACK_GITHUB_WEBHOOK }}
