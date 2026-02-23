@@ -19,6 +19,7 @@ jobs:
           fetch-depth: 0
 
       - name: Get PR diff
+        if: env.REPORTS_WEBHOOK != '' && env.ANTHROPIC_KEY != ''
         id: diff
         uses: actions/github-script@v7
         with:
@@ -44,6 +45,7 @@ jobs:
             core.setOutput('deletions', files.reduce((sum, f) => sum + f.deletions, 0));
 
       - name: Get PR details
+        if: env.REPORTS_WEBHOOK != '' && env.ANTHROPIC_KEY != ''
         id: pr
         uses: actions/github-script@v7
         with:
@@ -56,6 +58,7 @@ jobs:
             core.setOutput('number', pr.number);
 
       - name: Generate AI summary
+        if: env.REPORTS_WEBHOOK != '' && env.ANTHROPIC_KEY != ''
         id: ai
         run: |
           RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
@@ -95,6 +98,7 @@ jobs:
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Post AI summary to Slack
+        if: env.REPORTS_WEBHOOK != '' && env.ANTHROPIC_KEY != ''
         uses: slackapi/slack-github-action@v2.0.0
         with:
           webhook: ${{ secrets.REPORT_FUNKY_UPDATES }}
