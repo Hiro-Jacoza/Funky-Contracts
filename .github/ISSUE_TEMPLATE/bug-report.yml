@@ -1,0 +1,50 @@
+name: "Bug Report"
+description: "Report a smart contract bug"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Bug Report
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - Critical (funds at risk)
+        - High (function broken)
+        - Medium (degraded)
+        - Low (minor)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: contract
+    attributes:
+      label: Contract
+      options:
+        - FUNKY Token (funky.sol)
+        - FUNKY NFT (funky-nft)
+    validations:
+      required: true
+
+  - type: textarea
+    id: txhash
+    attributes:
+      label: Transaction Hash / Evidence
+      description: BSCScan link or transaction hash if applicable

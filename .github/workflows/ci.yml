@@ -1,0 +1,117 @@
+name: Contract CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  pr-template:
+    name: PR Template Check
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR body
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+            const required = ['## Purpose', '## Changes', '## Test Plan', '## Security Assessment', '## Decision Reference'];
+            const missing = required.filter(s => !body.includes(s));
+            if (missing.length > 0) {
+              core.setFailed(`PR template incomplete. Missing: ${missing.join(', ')}`);
+            }
+            if (!body.match(/Closes #\d+/) && !body.match(/Fixes #\d+/)) {
+              core.setFailed('No linked issue found. Contract PRs MUST reference an issue.');
+            }
+
+  compile-and-test:
+    name: Compile & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Compile FUNKY Token
+        run: npx hardhat compile
+
+      - name: Test FUNKY Token
+        run: npx hardhat test test/FunkyRave.test.js
+
+      - name: Compile FUNKY NFT
+        run: npx hardhat compile --config hardhat.config.nft.js
+
+      - name: Test FUNKY NFT
+        run: npx hardhat test --config hardhat.config.nft.js test/FunkyNFT.test.js
+
+  gas-report:
+    name: Gas Report
+    runs-on: ubuntu-latest
+    needs: compile-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Gas Report
+        run: REPORT_GAS=true npx hardhat test test/FunkyRave.test.js
+        env:
+          REPORT_GAS: "true"
+
+  security-scan:
+    name: Slither Security Scan
+    runs-on: ubuntu-latest
+    needs: compile-and-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run Slither
+        uses: crytic/slither-action@v0.4.0
+        continue-on-error: true
+        with:
+          target: .
+          slither-args: --exclude-dependencies
+          fail-on: high
+
+  adr-check:
+    name: ADR Required Check
+    if: contains(join(github.event.pull_request.labels.*.name, ','), 'needs-adr')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for ADR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            const hasAdr = files.some(f => f.filename.startsWith('docs/decisions/') && !f.filename.endsWith('template.md') && !f.filename.endsWith('README.md'));
+            if (!hasAdr) {
+              core.setFailed('This PR requires an ADR in docs/decisions/. Create one before merging.');
+            }
