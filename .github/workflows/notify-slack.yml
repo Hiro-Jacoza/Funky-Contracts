@@ -2,9 +2,11 @@ name: Slack Notifications
 
 on:
   issues:
-    types: [opened, closed, reopened]
+    types: [opened, closed, reopened, labeled]
   pull_request_target:
-    types: [opened, closed, ready_for_review]
+    types: [opened, closed, ready_for_review, review_requested]
+  pull_request_review:
+    types: [submitted]
   workflow_run:
     workflows: ["Contract CI"]
     types: [completed]
@@ -23,7 +25,24 @@ jobs:
           webhook-type: incoming-webhook
           payload: |
             {
-              "text": "[Contracts] Issue ${{ github.event.action }}: <${{ github.event.issue.html_url }}|#${{ github.event.issue.number }} ${{ github.event.issue.title }}>"
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ github.event.action == 'opened' && ':new:' || github.event.action == 'closed' && ':white_check_mark:' || ':arrows_counterclockwise:' }} *[Contracts] Issue ${{ github.event.action }}*\n<${{ github.event.issue.html_url }}|#${{ github.event.issue.number }} ${{ github.event.issue.title }}>\nby `${{ github.event.issue.user.login }}`"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": ":label: `${{ join(github.event.issue.labels.*.name, '` `') }}`  |  :robot_face: repo:`Funky-Contracts` action:`${{ github.event.action }}` type:`issue` number:`${{ github.event.issue.number }}`"
+                    }
+                  ]
+                }
+              ]
             }
 
       - name: PR notification
@@ -34,16 +53,78 @@ jobs:
           webhook-type: incoming-webhook
           payload: |
             {
-              "text": "[Contracts] PR ${{ github.event.action }}: <${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}>"
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ github.event.action == 'opened' && ':pencil:' || github.event.action == 'closed' && (github.event.pull_request.merged && ':tada:' || ':x:') || ':eyes:' }} *[Contracts] PR ${{ github.event.action }}${{ github.event.pull_request.merged && ' (merged)' || '' }}*\n<${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}>\nby `${{ github.event.pull_request.user.login }}` → `${{ github.event.pull_request.base.ref }}`  |  +${{ github.event.pull_request.additions }} -${{ github.event.pull_request.deletions }}"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": ":label: `${{ join(github.event.pull_request.labels.*.name, '` `') }}`  |  :robot_face: repo:`Funky-Contracts` action:`${{ github.event.action }}` type:`pr` number:`${{ github.event.pull_request.number }}` branch:`${{ github.event.pull_request.head.ref }}` base:`${{ github.event.pull_request.base.ref }}` merged:`${{ github.event.pull_request.merged }}`"
+                    }
+                  ]
+                }
+              ]
             }
 
-      - name: CI failure
-        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'failure'
+      - name: Review notification
+        if: github.event_name == 'pull_request_review'
         uses: slackapi/slack-github-action@v2.0.0
         with:
           webhook: ${{ secrets.SLACK_GITHUB_WEBHOOK }}
           webhook-type: incoming-webhook
           payload: |
             {
-              "text": "[Contracts] CI Failed: <${{ github.event.workflow_run.html_url }}|${{ github.event.workflow_run.name }}> on `${{ github.event.workflow_run.head_branch }}`"
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ github.event.review.state == 'approved' && ':white_check_mark:' || github.event.review.state == 'changes_requested' && ':warning:' || ':speech_balloon:' }} *[Contracts] PR Review: ${{ github.event.review.state }}*\n<${{ github.event.pull_request.html_url }}|#${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}>\nby `${{ github.event.review.user.login }}`"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": ":robot_face: repo:`Funky-Contracts` action:`review_${{ github.event.review.state }}` type:`review` number:`${{ github.event.pull_request.number }}`"
+                    }
+                  ]
+                }
+              ]
+            }
+
+      - name: CI result notification
+        if: github.event_name == 'workflow_run'
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          webhook: ${{ secrets.SLACK_GITHUB_WEBHOOK }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "${{ github.event.workflow_run.conclusion == 'success' && ':large_green_circle:' || ':red_circle:' }} *[Contracts] CI ${{ github.event.workflow_run.conclusion }}*\n<${{ github.event.workflow_run.html_url }}|${{ github.event.workflow_run.name }}> on `${{ github.event.workflow_run.head_branch }}`\nby `${{ github.event.workflow_run.triggering_actor.login }}`"
+                  }
+                },
+                {
+                  "type": "context",
+                  "elements": [
+                    {
+                      "type": "mrkdwn",
+                      "text": ":robot_face: repo:`Funky-Contracts` action:`ci_${{ github.event.workflow_run.conclusion }}` type:`ci` branch:`${{ github.event.workflow_run.head_branch }}` workflow:`${{ github.event.workflow_run.name }}`"
+                    }
+                  ]
+                }
+              ]
             }
