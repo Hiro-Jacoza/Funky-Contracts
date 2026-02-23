@@ -14,11 +14,12 @@ on:
 jobs:
   notify:
     name: Notify Slack
-    if: ${{ secrets.SLACK_GITHUB_WEBHOOK != '' }}
     runs-on: ubuntu-latest
+    env:
+      SLACK_WEBHOOK: ${{ secrets.SLACK_GITHUB_WEBHOOK }}
     steps:
       - name: Issue notification
-        if: github.event_name == 'issues'
+        if: env.SLACK_WEBHOOK != '' && github.event_name == 'issues'
         uses: slackapi/slack-github-action@v2.0.0
         with:
           webhook: ${{ secrets.SLACK_GITHUB_WEBHOOK }}
@@ -46,7 +47,7 @@ jobs:
             }
 
       - name: PR notification
-        if: github.event_name == 'pull_request_target'
+        if: env.SLACK_WEBHOOK != '' && github.event_name == 'pull_request_target'
         uses: slackapi/slack-github-action@v2.0.0
         with:
           webhook: ${{ secrets.SLACK_GITHUB_WEBHOOK }}
@@ -74,7 +75,7 @@ jobs:
             }
 
       - name: Review notification
-        if: github.event_name == 'pull_request_review'
+        if: env.SLACK_WEBHOOK != '' && github.event_name == 'pull_request_review'
         uses: slackapi/slack-github-action@v2.0.0
         with:
           webhook: ${{ secrets.SLACK_GITHUB_WEBHOOK }}
@@ -102,7 +103,7 @@ jobs:
             }
 
       - name: CI result notification
-        if: github.event_name == 'workflow_run'
+        if: env.SLACK_WEBHOOK != '' && github.event_name == 'workflow_run'
         uses: slackapi/slack-github-action@v2.0.0
         with:
           webhook: ${{ secrets.SLACK_GITHUB_WEBHOOK }}

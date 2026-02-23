@@ -146,12 +146,16 @@ jobs:
   report-to-slack:
     name: Report to Client
     needs: [compile-and-test, gas-report, security-scan]
-    if: always() && github.event_name == 'pull_request' && secrets.SLACK_REPORTS_WEBHOOK != ''
+    if: always() && github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    env:
+      REPORTS_WEBHOOK: ${{ secrets.REPORT_FUNKY_UPDATES }}
     steps:
       - uses: actions/checkout@v4
+        if: env.REPORTS_WEBHOOK != ''
 
       - name: Get changed files
+        if: env.REPORTS_WEBHOOK != ''
         id: changes
         uses: actions/github-script@v7
         with:
@@ -167,9 +171,10 @@ jobs:
             core.setOutput('count', files.length);
 
       - name: Post report to Slack
+        if: env.REPORTS_WEBHOOK != ''
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook: ${{ secrets.SLACK_REPORTS_WEBHOOK }}
+          webhook: ${{ secrets.REPORT_FUNKY_UPDATES }}
           webhook-type: incoming-webhook
           payload: |
             {

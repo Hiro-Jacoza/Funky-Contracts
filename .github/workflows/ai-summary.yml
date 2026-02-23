@@ -8,10 +8,13 @@ on:
 jobs:
   ai-summary:
     name: Generate AI Summary for Client
-    if: ${{ secrets.ANTHROPIC_API_KEY != '' && secrets.SLACK_REPORTS_WEBHOOK != '' }}
     runs-on: ubuntu-latest
+    env:
+      REPORTS_WEBHOOK: ${{ secrets.REPORT_FUNKY_UPDATES }}
+      ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
       - uses: actions/checkout@v4
+        if: env.REPORTS_WEBHOOK != '' && env.ANTHROPIC_KEY != ''
         with:
           fetch-depth: 0
 
@@ -94,7 +97,7 @@ jobs:
       - name: Post AI summary to Slack
         uses: slackapi/slack-github-action@v2.0.0
         with:
-          webhook: ${{ secrets.SLACK_REPORTS_WEBHOOK }}
+          webhook: ${{ secrets.REPORT_FUNKY_UPDATES }}
           webhook-type: incoming-webhook
           payload: |
             {
