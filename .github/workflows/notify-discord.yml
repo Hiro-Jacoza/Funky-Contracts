@@ -1,0 +1,157 @@
+name: Discord Notifications
+
+on:
+  issues:
+    types: [opened, closed, reopened, labeled]
+  pull_request_target:
+    types: [opened, closed, ready_for_review, review_requested]
+  pull_request_review:
+    types: [submitted]
+  workflow_run:
+    workflows: ["Contracts CI"]
+    types: [completed]
+
+jobs:
+  notify:
+    name: Notify Discord
+    runs-on: ubuntu-latest
+    env:
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+    steps:
+      - name: Issue notification
+        if: env.DISCORD_WEBHOOK != '' && github.event_name == 'issues'
+        run: |
+          python3 << 'PYEOF'
+          import json, os, urllib.request
+
+          action = os.environ.get("GITHUB_EVENT_ACTION", "")
+          emoji = {"opened": "🆕", "closed": "✅", "reopened": "🔄", "labeled": "🏷️"}.get(action, "📌")
+          color = {"opened": 3447003, "closed": 3066993, "reopened": 15844367, "labeled": 9442302}.get(action, 3447003)
+
+          payload = {
+            "username": "Funky Bot",
+            "embeds": [{
+              "title": f"{emoji} [Contracts] Issue {action}",
+              "url": "${{ github.event.issue.html_url }}",
+              "description": "**[#${{ github.event.issue.number }} ${{ github.event.issue.title }}](${{ github.event.issue.html_url }})**\nby `${{ github.event.issue.user.login }}`",
+              "color": color,
+              "footer": {"text": "repo:Funky-Contracts  type:issue  action:" + action}
+            }]
+          }
+
+          req = urllib.request.Request(
+            os.environ["DISCORD_WEBHOOK"],
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+          )
+          urllib.request.urlopen(req)
+          PYEOF
+
+      - name: PR notification
+        if: env.DISCORD_WEBHOOK != '' && github.event_name == 'pull_request_target'
+        run: |
+          python3 << 'PYEOF'
+          import json, os, urllib.request
+
+          action = "${{ github.event.action }}"
+          merged = "${{ github.event.pull_request.merged }}" == "true"
+
+          if action == "opened":
+            emoji, color = "✏️", 3447003
+          elif action == "closed" and merged:
+            emoji, color = "🎉", 10181046
+          elif action == "closed":
+            emoji, color = "❌", 15158332
+          else:
+            emoji, color = "👀", 15844367
+
+          status = "merged" if (action == "closed" and merged) else action
+
+          payload = {
+            "username": "Funky Bot",
+            "embeds": [{
+              "title": f"{emoji} [Contracts] PR {status}",
+              "url": "${{ github.event.pull_request.html_url }}",
+              "description": "**[#${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}](${{ github.event.pull_request.html_url }})**\nby `${{ github.event.pull_request.user.login }}`  →  `${{ github.event.pull_request.base.ref }}`",
+              "color": color,
+              "fields": [
+                {"name": "Added", "value": "+${{ github.event.pull_request.additions }}", "inline": True},
+                {"name": "Removed", "value": "-${{ github.event.pull_request.deletions }}", "inline": True},
+                {"name": "Branch", "value": "`${{ github.event.pull_request.head.ref }}`", "inline": True}
+              ],
+              "footer": {"text": "repo:Funky-Contracts  type:pr  action:" + status}
+            }]
+          }
+
+          req = urllib.request.Request(
+            os.environ["DISCORD_WEBHOOK"],
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+          )
+          urllib.request.urlopen(req)
+          PYEOF
+
+      - name: Review notification
+        if: env.DISCORD_WEBHOOK != '' && github.event_name == 'pull_request_review'
+        run: |
+          python3 << 'PYEOF'
+          import json, os, urllib.request
+
+          state = "${{ github.event.review.state }}"
+          emoji = {"approved": "✅", "changes_requested": "⚠️", "commented": "💬"}.get(state, "📝")
+          color = {"approved": 3066993, "changes_requested": 15158332, "commented": 3447003}.get(state, 3447003)
+
+          payload = {
+            "username": "Funky Bot",
+            "embeds": [{
+              "title": f"{emoji} [Contracts] PR Review: {state.replace('_', ' ').title()}",
+              "url": "${{ github.event.pull_request.html_url }}",
+              "description": "**[#${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}](${{ github.event.pull_request.html_url }})**\nreviewed by `${{ github.event.review.user.login }}`",
+              "color": color,
+              "footer": {"text": "repo:Funky-Contracts  type:review  action:" + state}
+            }]
+          }
+
+          req = urllib.request.Request(
+            os.environ["DISCORD_WEBHOOK"],
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+          )
+          urllib.request.urlopen(req)
+          PYEOF
+
+      - name: CI result notification
+        if: env.DISCORD_WEBHOOK != '' && github.event_name == 'workflow_run'
+        run: |
+          python3 << 'PYEOF'
+          import json, os, urllib.request
+
+          conclusion = "${{ github.event.workflow_run.conclusion }}"
+          emoji = "🟢" if conclusion == "success" else "🔴"
+          color = 3066993 if conclusion == "success" else 15158332
+
+          # Contract changes are high-stakes — flag failures more loudly
+          extra = "\n⚠️ **Contract CI failure requires immediate attention.**" if conclusion != "success" else ""
+
+          payload = {
+            "username": "Funky Bot",
+            "embeds": [{
+              "title": f"{emoji} [Contracts] CI {conclusion}",
+              "url": "${{ github.event.workflow_run.html_url }}",
+              "description": f"**${{{{ github.event.workflow_run.name }}}}**\nbranch: `${{{{ github.event.workflow_run.head_branch }}}}`\ntriggered by `${{{{ github.event.workflow_run.triggering_actor.login }}}}`{extra}",
+              "color": color,
+              "footer": {"text": "repo:Funky-Contracts  type:ci  conclusion:" + conclusion}
+            }]
+          }
+
+          req = urllib.request.Request(
+            os.environ["DISCORD_WEBHOOK"],
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+          )
+          urllib.request.urlopen(req)
+          PYEOF
