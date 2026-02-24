@@ -60,38 +60,70 @@ jobs:
       - name: Generate AI summary
         if: env.REPORTS_WEBHOOK != '' && env.ANTHROPIC_KEY != ''
         id: ai
+        env:
+          INPUT_PR_TITLE: ${{ steps.pr.outputs.title }}
+          INPUT_PR_BODY: ${{ steps.pr.outputs.body }}
+          INPUT_DIFF: ${{ steps.diff.outputs.diff }}
+          INPUT_FILE_COUNT: ${{ steps.diff.outputs.file-count }}
+          INPUT_ADDITIONS: ${{ steps.diff.outputs.additions }}
+          INPUT_DELETIONS: ${{ steps.diff.outputs.deletions }}
+          INPUT_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          RESPONSE=$(curl -s https://api.anthropic.com/v1/messages \
-            -H "Content-Type: application/json" \
-            -H "x-api-key: ${{ secrets.ANTHROPIC_API_KEY }}" \
-            -H "anthropic-version: 2023-06-01" \
-            -d @- <<'REQEOF'
-          {
-            "model": "claude-sonnet-4-20250514",
-            "max_tokens": 1024,
-            "messages": [
-              {
-                "role": "user",
-                "content": "You are a development assistant for the FUNKY.FAN project (a gacha token/NFT platform on BSC blockchain). Generate a brief, client-friendly summary of this Smart Contract Pull Request for a non-technical client viewing Slack.\n\nRules:\n- Write in simple, clear language (no jargon)\n- Maximum 5 bullet points\n- Focus on WHAT changed in the contract behavior and WHY\n- ALWAYS mention security implications clearly\n- Flag if this requires redeployment or migration\n- Flag if token economics are affected\n- Keep it under 300 words total\n- Do NOT use markdown headers, just plain text with bullet points\n\nPR Title: ${{ steps.pr.outputs.title }}\nPR Description:\n${{ steps.pr.outputs.body }}\n\nCode Changes (${{ steps.diff.outputs.file-count }} files, +${{ steps.diff.outputs.additions }} -${{ steps.diff.outputs.deletions }}):\n${{ steps.diff.outputs.diff }}"
-              }
-            ]
-          }
-          REQEOF
+          SUMMARY=$(python3 << 'PYEOF'
+          import json, os, urllib.request, urllib.error
+
+          prompt = (
+              "You are a development assistant for the FUNKY.FAN project "
+              "(a gacha token/NFT platform on BSC blockchain). Generate a brief, "
+              "client-friendly summary of this Smart Contract Pull Request for a "
+              "non-technical client viewing Slack.\n\n"
+              "Rules:\n"
+              "- Write in simple, clear language (no jargon)\n"
+              "- Maximum 5 bullet points\n"
+              "- Focus on WHAT changed in the contract behavior and WHY\n"
+              "- ALWAYS mention security implications clearly\n"
+              "- Flag if this requires redeployment or migration\n"
+              "- Flag if token economics are affected\n"
+              "- Keep it under 300 words total\n"
+              "- Do NOT use markdown headers, just plain text with bullet points\n\n"
+              f"PR Title: {os.environ['INPUT_PR_TITLE']}\n"
+              f"PR Description:\n{os.environ['INPUT_PR_BODY']}\n\n"
+              f"Code Changes ({os.environ['INPUT_FILE_COUNT']} files, "
+              f"+{os.environ['INPUT_ADDITIONS']} -{os.environ['INPUT_DELETIONS']}):\n"
+              f"{os.environ['INPUT_DIFF']}"
           )
 
-          SUMMARY=$(echo "$RESPONSE" | python3 -c "
-          import sys, json
+          payload = json.dumps({
+              "model": "claude-sonnet-4-20250514",
+              "max_tokens": 1024,
+              "messages": [{"role": "user", "content": prompt}]
+          })
+
+          req = urllib.request.Request(
+              "https://api.anthropic.com/v1/messages",
+              data=payload.encode("utf-8"),
+              headers={
+                  "Content-Type": "application/json",
+                  "x-api-key": os.environ["INPUT_API_KEY"],
+                  "anthropic-version": "2023-06-01",
+              },
+          )
+
           try:
-              data = json.load(sys.stdin)
-              if 'content' in data and len(data['content']) > 0:
-                  print(data['content'][0]['text'])
-              elif 'error' in data:
-                  print('AI summary unavailable: ' + data['error'].get('message', 'unknown error'))
+              with urllib.request.urlopen(req) as resp:
+                  data = json.loads(resp.read().decode("utf-8"))
+              if "content" in data and len(data["content"]) > 0:
+                  print(data["content"][0]["text"])
               else:
-                  print('AI summary unavailable')
-          except:
-              print('AI summary unavailable')
-          ")
+                  print("AI summary unavailable")
+          except urllib.error.HTTPError as e:
+              body = json.loads(e.read().decode("utf-8"))
+              msg = body.get("error", {}).get("message", str(e))
+              print(f"AI summary unavailable: {msg}")
+          except Exception as e:
+              print(f"AI summary unavailable: {e}")
+          PYEOF
+          )
 
           echo "summary<<EOF" >> $GITHUB_OUTPUT
           echo "$SUMMARY" >> $GITHUB_OUTPUT
