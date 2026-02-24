@@ -9,6 +9,9 @@ jobs:
   ai-summary:
     name: Generate AI Summary for Client
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      contents: read
     env:
       REPORTS_WEBHOOK: ${{ secrets.REPORT_FUNKY_UPDATES }}
       ANTHROPIC_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
