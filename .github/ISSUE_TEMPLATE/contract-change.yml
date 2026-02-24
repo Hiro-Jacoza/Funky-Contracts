@@ -1,0 +1,84 @@
+name: "Smart Contract Change"
+description: "Propose a change to smart contracts (ADR required)"
+labels: ["contract", "needs-adr", "critical-review"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Smart Contract Change Request
+        Contract changes are high-risk and often irreversible.
+        An Architecture Decision Record (ADR) is required before implementation.
+
+  - type: textarea
+    id: change
+    attributes:
+      label: Proposed Change
+      description: What contract logic needs to change?
+    validations:
+      required: true
+
+  - type: textarea
+    id: rationale
+    attributes:
+      label: Rationale
+    validations:
+      required: true
+
+  - type: dropdown
+    id: contract
+    attributes:
+      label: Contract Affected
+      options:
+        - FUNKY Token (funky.sol)
+        - FUNKY NFT (funky-nft)
+        - New Contract
+        - Multiple Contracts
+    validations:
+      required: true
+
+  - type: textarea
+    id: security
+    attributes:
+      label: Security Considerations
+      description: Impact on fund safety, access control, token economics?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: migration
+    attributes:
+      label: Requires Redeployment?
+      options:
+        - "Yes — full redeployment"
+        - "Yes — proxy upgrade"
+        - "No — parameter change only"
+        - "No — off-chain change only"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: network
+    attributes:
+      label: Target Network
+      options:
+        - BSC Testnet only
+        - BSC Testnet then Mainnet
+        - BSC Mainnet (hotfix)
+    validations:
+      required: true
+
+  - type: textarea
+    id: testing
+    attributes:
+      label: Testing Strategy
+      placeholder: |
+        - [ ] Unit tests (Hardhat)
+        - [ ] Testnet deployment
+        - [ ] Security scan (Slither)
+    validations:
+      required: true
+
+  - type: textarea
+    id: rollback
+    attributes:
+      label: Rollback Plan
