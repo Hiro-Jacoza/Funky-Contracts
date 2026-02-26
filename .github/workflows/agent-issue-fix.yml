@@ -1,0 +1,252 @@
+name: Agent Issue Auto-Fix (Phase 2)
+
+# Triggers when an issue is labeled with "agent-ok"
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  auto-fix:
+    name: Auto-Fix Issue
+    if: github.event.label.name == 'agent-ok'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      GH_TOKEN: ${{ github.token }}
+      ISSUE_NUMBER: ${{ github.event.issue.number }}
+      ISSUE_TITLE: ${{ github.event.issue.title }}
+
+    steps:
+      - name: Skip if already has an agent branch
+        id: guard
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const body = issue.body || '';
+
+            // Check if we already spawned an agent for this issue
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open'
+            });
+
+            const agentPR = prs.find(pr =>
+              pr.title.includes(`[agent-impl]`) &&
+              pr.body?.includes(`#${issue.number}`)
+            );
+
+            if (agentPR) {
+              core.setOutput('skip', 'true');
+              console.log(`Agent PR already exists: ${agentPR.html_url}`);
+            } else {
+              core.setOutput('skip', 'false');
+            }
+
+            core.setOutput('issue-body', body.substring(0, 3000));
+
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.skip == 'false'
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - uses: actions/setup-node@v4
+        if: steps.guard.outputs.skip == 'false'
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies and Claude Code
+        if: steps.guard.outputs.skip == 'false'
+        run: |
+          npm ci
+          npm install -g @anthropic-ai/claude-code
+
+      - name: Configure git
+        if: steps.guard.outputs.skip == 'false'
+        run: |
+          git config user.name "Funky Agent [bot]"
+          git config user.email "agent@funky.fan"
+
+      - name: Determine scope from issue labels
+        if: steps.guard.outputs.skip == 'false'
+        id: scope
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = context.payload.issue.labels.map(l => l.name);
+            let scope = 'default';
+            if (labels.includes('scope:full')) scope = 'full';
+            else if (labels.includes('scope:api')) scope = 'api';
+            core.setOutput('scope', scope);
+            console.log(`Resolved scope: ${scope} from labels: ${labels.join(', ')}`);
+
+      - name: Create feature branch
+        if: steps.guard.outputs.skip == 'false'
+        id: branch
+        run: |
+          SAFE_TITLE=$(echo "$ISSUE_TITLE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9-]/-/g' | cut -c1-40)
+          BRANCH="agent/issue-${ISSUE_NUMBER}-${SAFE_TITLE}"
+          git checkout -b "$BRANCH"
+          echo "name=$BRANCH" >> $GITHUB_OUTPUT
+
+      - name: Run Claude Code agent
+        if: steps.guard.outputs.skip == 'false'
+        id: agent
+        env:
+          ISSUE_BODY: ${{ steps.guard.outputs.issue-body }}
+          SCOPE: ${{ steps.scope.outputs.scope }}
+        run: |
+          python3 << 'PYEOF'
+          import os
+
+          scope = os.environ.get("SCOPE", "default")
+          issue_num = os.environ.get("ISSUE_NUMBER", "")
+          issue_title = os.environ.get("ISSUE_TITLE", "")
+          issue_body = os.environ.get("ISSUE_BODY", "")
+
+          # Load relevant files
+          policy = open(".agent/policy.md").read() if os.path.exists(".agent/policy.md") else ""
+          template = open(".agent/task_templates/feature.md").read() if os.path.exists(".agent/task_templates/feature.md") else ""
+          scope_doc = open("spec/directory-scope.md").read() if os.path.exists("spec/directory-scope.md") else ""
+          overview = open("spec/00_overview.md").read() if os.path.exists("spec/00_overview.md") else ""
+          criteria = open("spec/ci-success-criteria.md").read() if os.path.exists("spec/ci-success-criteria.md") else ""
+
+          scope_desc = {
+            "default": "docs/, test/__tests__/, scripts/, spec/, .agent/, .github/ ONLY",
+            "api": "docs/, tests/, scripts/, spec/, .agent/, .github/ + src/routes/, src/controllers/, src/services/, src/middleware/, src/types/",
+            "full": "full src/ access except prisma/migrations/ and .env files"
+          }.get(scope, "docs/, tests/, scripts/ only")
+
+          prompt = f"""You are implementing a GitHub issue for Funky.fan Contracts.
+
+          ## Issue #{issue_num}: {issue_title}
+
+          {issue_body}
+
+          ## Project Context
+          {overview}
+
+          ## Directory Scope (HARD LIMIT — do NOT touch files outside this scope)
+          Scope level: {scope}
+          Allowed paths: {scope_desc}
+
+          ## Agent Policy
+          {policy}
+
+          ## Feature Template
+          {template}
+
+          ## Success Criteria
+          {criteria}
+
+          ## Process
+          1. Read the issue carefully — understand what's being asked
+          2. Check the directory scope — only touch allowed paths
+          3. Read relevant existing files before writing new ones
+          4. Implement the minimal change that satisfies the issue
+          5. Run all checks: npx hardhat compile && npx hardhat test && npm run lint
+          6. If checks pass, commit: git add -A && git commit -m "feat(scope): {issue_title} [agent-impl] closes #{issue_num}"
+          7. Push and create PR: git push origin HEAD && gh pr create --fill
+
+          In the PR body, follow the template in .agent/pr_prompt.md and include "Closes #{issue_num}" in the body.
+          """
+
+          with open("/tmp/agent-prompt.txt", "w") as f:
+              f.write(prompt)
+
+          print(f"Prompt ready: {len(prompt)} chars, scope: {scope}")
+          PYEOF
+
+          claude --model claude-sonnet-4-6 \
+            --dangerously-skip-permissions \
+            -p "$(cat /tmp/agent-prompt.txt)" \
+            --allowedTools "Edit,Write,Read,Glob,Grep,Bash" \
+            2>&1 | tee /tmp/agent-output.txt || true
+
+          # Check if agent created commits
+          if git log --oneline HEAD ^main | grep -q "agent-impl"; then
+            echo "committed=true" >> $GITHUB_OUTPUT
+          else
+            echo "committed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Push and create PR if not already done
+        if: steps.agent.outputs.committed == 'true'
+        id: pr
+        run: |
+          BRANCH="${{ steps.branch.outputs.name }}"
+
+          # Push (agent may have already done this)
+          git push origin "$BRANCH" 2>/dev/null || true
+
+          # Create PR if not exists
+          PR_URL=$(gh pr list --head "$BRANCH" --json url --jq '.[0].url' 2>/dev/null)
+          if [[ -z "$PR_URL" ]]; then
+            PR_URL=$(gh pr create \
+              --head "$BRANCH" \
+              --base main \
+              --title "feat(agent): $ISSUE_TITLE [agent-impl]" \
+              --body "Closes #$ISSUE_NUMBER
+
+          Auto-implemented from issue #$ISSUE_NUMBER.
+
+          ---
+          *Created by Claude Code agent — review before merging*" 2>&1)
+          fi
+
+          echo "url=$PR_URL" >> $GITHUB_OUTPUT
+
+      - name: Comment on issue with result
+        if: always() && steps.guard.outputs.skip == 'false'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const committed = "${{ steps.agent.outputs.committed }}" === "true";
+            const prUrl = "${{ steps.pr.outputs.url }}";
+
+            const body = committed
+              ? `🤖 Agent started working on this issue.\n\nPR created: ${prUrl}\n\nPlease review before merging.`
+              : `🤖 Agent attempted this issue but could not create a valid implementation.\n\nManual work required.\n\n<details><summary>Agent log</summary>\n\nSee the workflow run for details.\n\n</details>`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number,
+              body
+            });
+
+      - name: Notify Discord
+        if: always() && env.DISCORD_WEBHOOK != ''
+        run: |
+          python3 << 'PYEOF'
+          import json, os, urllib.request
+
+          committed = "${{ steps.agent.outputs.committed }}" == "true"
+          pr_url = "${{ steps.pr.outputs.url }}"
+          issue_num = os.environ.get("ISSUE_NUMBER", "")
+          issue_title = os.environ.get("ISSUE_TITLE", "")
+
+          emoji = "🤖✅" if committed else "🤖❌"
+          color = 3447003 if committed else 15158332
+          title = f"[Contracts] Agent implemented issue #{issue_num}"
+          desc = f"**{issue_title}**\n\n{pr_url}" if committed else f"**{issue_title}**\n\nCould not implement — manual work needed."
+
+          payload = {
+            "username": "Funky Agent Bot",
+            "embeds": [{"title": f"{emoji} {title}", "description": desc, "color": color,
+              "footer": {"text": "repo:Funky-Contracts  type:agent_issue_fix  phase:2"}}]
+          }
+
+          req = urllib.request.Request(os.environ["DISCORD_WEBHOOK"],
+            data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
+          urllib.request.urlopen(req, timeout=10)
+          PYEOF

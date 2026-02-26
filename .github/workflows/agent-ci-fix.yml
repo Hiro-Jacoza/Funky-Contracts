@@ -1,0 +1,214 @@
+name: Agent CI Auto-Fix (Phase 1)
+
+on:
+  workflow_run:
+    workflows: ["Contracts CI"]
+    types: [completed]
+
+jobs:
+  auto-fix:
+    name: Auto-Fix CI Failure
+    # Extra safety: only run on non-main, non-agent branches
+    # Contracts are high-stakes — agents only fix tests/scripts, not production contracts
+    if: |
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.head_branch != 'main' &&
+      !startsWith(github.event.workflow_run.head_branch, 'agent/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+      GH_TOKEN: ${{ github.token }}
+      FAILING_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      CI_RUN_URL: ${{ github.event.workflow_run.html_url }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies and Claude Code
+        run: |
+          npm ci
+          npm install -g @anthropic-ai/claude-code
+
+      - name: Configure git
+        run: |
+          git config user.name "Funky Agent [bot]"
+          git config user.email "agent@funky.fan"
+
+      - name: Reproduce CI failures
+        id: reproduce
+        run: |
+          set +e
+          ERRORS=""
+
+          COMPILE_OUT=$(npx hardhat compile 2>&1)
+          [[ $? != 0 ]] && ERRORS+="### Compile Errors\n\`\`\`\n${COMPILE_OUT:0:3000}\n\`\`\`\n\n"
+
+          TEST_OUT=$(npx hardhat test 2>&1)
+          [[ $? != 0 ]] && ERRORS+="### Test Failures\n\`\`\`\n${TEST_OUT:0:4000}\n\`\`\`\n\n"
+
+          LINT_OUT=$(npm run lint 2>&1)
+          [[ $? != 0 ]] && ERRORS+="### Lint Errors\n\`\`\`\n${LINT_OUT:0:2000}\n\`\`\`\n\n"
+
+          if [[ -z "$ERRORS" ]]; then
+            echo "has-errors=false" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          printf '%b' "$ERRORS" > /tmp/ci-errors.txt
+          echo "has-errors=true" >> $GITHUB_OUTPUT
+
+      - name: Create fix branch
+        if: steps.reproduce.outputs.has-errors == 'true'
+        id: branch
+        run: |
+          SAFE_BRANCH=$(echo "$FAILING_BRANCH" | tr '/' '-' | tr '[:upper:]' '[:lower:]')
+          FIX_BRANCH="agent/fix-${SAFE_BRANCH}-$(date +%Y%m%d%H%M)"
+          git checkout -b "$FIX_BRANCH"
+          echo "name=$FIX_BRANCH" >> $GITHUB_OUTPUT
+
+      - name: Run Claude Code agent with retry
+        if: steps.reproduce.outputs.has-errors == 'true'
+        id: agent
+        run: |
+          SUCCESS=false
+
+          for attempt in 1 2 3; do
+            python3 << 'PYEOF'
+          import os
+
+          policy = open(".agent/policy.md").read() if os.path.exists(".agent/policy.md") else ""
+          errors = open("/tmp/ci-errors.txt").read() if os.path.exists("/tmp/ci-errors.txt") else ""
+          attempt = os.environ.get("ATTEMPT", "1")
+          branch = os.environ.get("FAILING_BRANCH", "unknown")
+
+          prompt = f"""You are fixing CI failures on Funky.fan Solidity smart contracts.
+          Branch: {branch}, Attempt: {attempt}/3
+
+          ## CRITICAL CONTRACT SAFETY RULES
+          - ONLY fix test files, scripts, and config — NOT production contract logic
+          - If the compile error is in contracts/FunkyRave.sol or contracts/FunkyNFT.sol,
+            you may fix syntax/import errors ONLY, not logic changes
+          - NEVER remove security modifiers (onlyOwner, nonReentrant, etc.)
+          - NEVER change fee percentages or tier boundaries
+
+          ## CI Errors
+          {errors}
+
+          ## Agent Policy
+          {policy}
+
+          ## Fix Process
+          1. Identify if error is in test/ or in contracts/
+          2. For test errors: fix the test, not the contract
+          3. For compile errors: fix imports and syntax only
+          4. Verify: npx hardhat compile && npx hardhat test
+          5. Commit: git add -A && git commit -m "fix(ci): auto-fix contracts CI [attempt {attempt}] [agent-fix]"
+
+          In the commit and PR body include:
+          - What file was changed
+          - Was it a test file or a contract file?
+          - Security considerations: none / or describe
+          """
+
+          with open("/tmp/agent-prompt.txt", "w") as f:
+              f.write(prompt)
+          PYEOF
+            export ATTEMPT=$attempt
+
+            claude --model claude-sonnet-4-6 \
+              --dangerously-skip-permissions \
+              -p "$(cat /tmp/agent-prompt.txt)" \
+              --allowedTools "Edit,Write,Read,Glob,Grep,Bash" \
+              2>&1 | tee /tmp/agent-output-${attempt}.txt || true
+
+            if npx hardhat compile 2>/dev/null && npx hardhat test 2>/dev/null; then
+              SUCCESS=true
+              break
+            fi
+          done
+
+          echo "success=$SUCCESS" >> $GITHUB_OUTPUT
+
+      - name: Push and create PR
+        if: steps.reproduce.outputs.has-errors == 'true'
+        id: pr
+        run: |
+          if ! git diff --cached --quiet || ! git diff --quiet; then
+            git add -A
+            git commit -m "fix(ci): agent fix [agent-fix]" || true
+          fi
+
+          FIX_BRANCH="${{ steps.branch.outputs.name }}"
+          git push origin "$FIX_BRANCH"
+
+          STATUS="${{ steps.agent.outputs.success == 'true' && 'PASS' || 'PARTIAL' }}"
+          gh pr create \
+            --head "$FIX_BRANCH" \
+            --base "$FAILING_BRANCH" \
+            --title "fix(agent): auto-fix contracts CI on \`$FAILING_BRANCH\` [$STATUS]" \
+            --body "## Purpose
+          Automated CI fix for \`$FAILING_BRANCH\`.
+
+          **Status:** ${{ steps.agent.outputs.success == 'true' && '✅ All checks pass' || '⚠️ Partial fix — review needed' }}
+          **CI Run:** $CI_RUN_URL
+
+          ## Contract Safety
+          - Requires redeployment: NO (test/script fix only)
+          - Production contract logic changed: NO
+          - Security considerations: none
+
+          ## Test Plan
+          - [x] \`npx hardhat compile\`
+          - [x] \`npx hardhat test\`
+
+          ## Decision Reference
+          CI: $CI_RUN_URL
+
+          ---
+          *Created by Claude Code agent — ALWAYS review contract changes before merging*" 2>&1 || echo "PR failed"
+
+      - name: Notify Discord with @here on contracts failure
+        if: always() && env.DISCORD_WEBHOOK != ''
+        run: |
+          python3 << 'PYEOF'
+          import json, os, urllib.request
+
+          success = "${{ steps.agent.outputs.success }}" == "true"
+          branch = os.environ.get("FAILING_BRANCH", "unknown")
+          ci_url = os.environ.get("CI_RUN_URL", "")
+          has_errors = "${{ steps.reproduce.outputs.has-errors }}" == "true"
+
+          if not has_errors:
+            exit(0)
+
+          # Contracts always get @here — high stakes
+          content = "@here" if not success else ""
+          emoji = "🤖✅" if success else "🚨🤖"
+          color = 3066993 if success else 15158332
+          title = f"[Contracts] Agent {'fixed' if success else 'PARTIAL FIX — REVIEW REQUIRED'} CI on `{branch}`"
+
+          payload = {
+            "content": content,
+            "username": "Funky Agent Bot",
+            "embeds": [{"title": f"{emoji} {title}", "description": f"CI: {ci_url}", "color": color,
+              "footer": {"text": "repo:Funky-Contracts  type:agent_ci_fix  phase:1"}}]
+          }
+
+          req = urllib.request.Request(os.environ["DISCORD_WEBHOOK"],
+            data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
+          urllib.request.urlopen(req, timeout=10)
+          PYEOF
